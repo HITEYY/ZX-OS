@@ -500,18 +500,55 @@ bool UIShell::textInput(const String &title,
                         String &inOutValue,
                         bool mask,
                         const std::function<void()> &backgroundTick) {
-  static const char *kRowsNormal[] = {
-      "1234567890-=",
-      "qwertyuiop[]",
-      "asdfghjkl;'\\",
-      "\\zxcvbnm,.?/",
-  };
-  static const char *kRowsShifted[] = {
-      "!@#$%^&*()_+",
-      "QWERTYUIOP{}",
-      "ASDFGHJKL:\"|",
-      "|ZXCVBNM<>//",
-  };
+  static const char kQwertyKeyset[4][12][2] = {
+      {{'1', '!'},
+       {'2', '@'},
+       {'3', '#'},
+       {'4', '$'},
+       {'5', '%'},
+       {'6', '^'},
+       {'7', '&'},
+       {'8', '*'},
+       {'9', '('},
+       {'0', ')'},
+       {'-', '_'},
+       {'=', '+'}},
+      {{'q', 'Q'},
+       {'w', 'W'},
+       {'e', 'E'},
+       {'r', 'R'},
+       {'t', 'T'},
+       {'y', 'Y'},
+       {'u', 'U'},
+       {'i', 'I'},
+       {'o', 'O'},
+       {'p', 'P'},
+       {'[', '{'},
+       {']', '}'}},
+      {{'a', 'A'},
+       {'s', 'S'},
+       {'d', 'D'},
+       {'f', 'F'},
+       {'g', 'G'},
+       {'h', 'H'},
+       {'j', 'J'},
+       {'k', 'K'},
+       {'l', 'L'},
+       {';', ':'},
+       {'\"', '\''},
+       {'|', '\\'}},
+      {{'\\', '|'},
+       {'z', 'Z'},
+       {'x', 'X'},
+       {'c', 'C'},
+       {'v', 'V'},
+       {'b', 'B'},
+       {'n', 'N'},
+       {'m', 'M'},
+       {',', '<'},
+       {'.', '>'},
+       {'?', '/'},
+       {'/', '/'}}};
 
   String working = inOutValue;
   size_t rowIndex = 0;
@@ -521,9 +558,7 @@ bool UIShell::textInput(const String &title,
   unsigned long lastRefreshMs = millis();
 
   while (true) {
-    const String rowNormal = kRowsNormal[rowIndex];
-    const String rowShifted = kRowsShifted[rowIndex];
-    const int rowCharCount = static_cast<int>(rowNormal.length());
+    const int rowCharCount = 12;
     const int entryCount = rowCharCount + 5;
 
     selected = wrapIndex(selected, entryCount);
@@ -538,8 +573,7 @@ bool UIShell::textInput(const String &title,
       std::vector<String> entries;
       entries.reserve(static_cast<size_t>(entryCount));
       for (int i = 0; i < rowCharCount; ++i) {
-        const char c = caps ? rowShifted[static_cast<unsigned int>(i)]
-                            : rowNormal[static_cast<unsigned int>(i)];
+        const char c = kQwertyKeyset[rowIndex][static_cast<size_t>(i)][caps ? 1 : 0];
         entries.push_back(String(c));
       }
 
@@ -575,8 +609,7 @@ bool UIShell::textInput(const String &title,
       redraw = true;
     } else if (ev.ok) {
       if (selected < rowCharCount) {
-        const char c = caps ? rowShifted[static_cast<unsigned int>(selected)]
-                            : rowNormal[static_cast<unsigned int>(selected)];
+        const char c = kQwertyKeyset[rowIndex][static_cast<size_t>(selected)][caps ? 1 : 0];
         working += c;
         redraw = true;
       } else {

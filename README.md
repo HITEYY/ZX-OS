@@ -4,9 +4,8 @@ LilyGo T-Embed CC1101 보드를 OpenClaw Remote Gateway에 `node`로 연결하�
 
 이 버전은 런타임 앱 구조를 사용합니다.
 
-- `OpenClaw` 앱: 상태 확인 + Connect/Disconnect/Reconnect
-- `Setting` 앱: Wi-Fi/Gateway 설정 편집, NVS 저장, Factory Reset
-- `Setting` 앱: BLE 스캔/연결/저장(재접속 대상)
+- `OpenClaw` 앱: 상태 확인 + Wi-Fi/Gateway 설정 + Save & Apply + Connect/Disconnect/Reconnect
+- `Setting` 앱: BLE 스캔/연결/저장(재접속 대상) + System(Factory Reset)
 
 ## 핵심 기능
 
@@ -52,18 +51,18 @@ pio device monitor -b 115200
 - NVS 저장값이 있으면 NVS가 우선됩니다.
 - NVS가 비어있을 때만 `user_config.h` 값이 로드됩니다.
 
-## 설정 앱 흐름
+## 앱 설정 흐름
 
-1. `Setting -> Wi-Fi`
+1. `OpenClaw -> Wi-Fi`
 - `Scan Networks`로 SSID 선택 + 비밀번호 입력
 - `Hidden SSID`로 수동 SSID/비밀번호 입력
 
-2. `Setting -> Gateway`
+2. `OpenClaw -> Gateway`
 - URL 입력 (`ws://` 또는 `wss://`)
 - Auth Mode 선택 (`Token` / `Password`)
 - Credential 입력(마스킹)
 
-3. `Setting -> Save & Apply`
+3. `OpenClaw -> Save & Apply`
 - 유효성 검사 후 NVS 저장
 - Wi-Fi/Gateway 런타임 반영
 - Gateway 재연결 시도
@@ -74,6 +73,60 @@ pio device monitor -b 115200
 
 5. `Setting -> System -> Factory Reset`
 - 2단계 확인 후 NVS 설정 삭제
+
+## Tailscale로 OpenClaw 연결
+
+참고한 문서/프로젝트:
+
+- [tailscale-iot](https://github.com/alfs/tailscale-iot)
+- [Tailscale small binaries](https://tailscale.com/docs/how-to/set-up-small-tailscale)
+
+이 펌웨어는 Tailscale 클라이언트를 직접 내장하지 않습니다. 대신 같은 LAN에 있는
+소형 Tailscale 노드(라즈베리파이/OpenWrt 등)에서 TCP relay를 띄우면, 현재 펌웨어
+수정 없이 OpenClaw Gateway를 Tailscale 경유로 사용할 수 있습니다.
+
+연결 구조:
+
+```text
+T-Embed(ESP32) --ws://LAN_RELAY_IP:18789--> Relay 노드 --Tailscale--> OpenClaw Gateway
+```
+
+### 1) Relay 노드 준비
+
+- Relay 노드에 Tailscale을 설치하고 tailnet에 조인합니다.
+- Relay 노드에서 Gateway tailnet 주소(예: `100.x.y.z` 또는 `*.ts.net`)로 연결 가능한지 확인합니다.
+
+### 2) Relay 실행
+
+이 레포에 포함된 스크립트를 Relay 노드에서 실행합니다.
+
+```bash
+./scripts/tailscale_openclaw_relay.sh <gateway_tailnet_host_or_ip> 18789 18789
+```
+
+예시:
+
+```bash
+./scripts/tailscale_openclaw_relay.sh openclaw-gateway.tailnet.ts.net
+```
+
+### 3) 디바이스 설정
+
+1. `OpenClaw -> Wi-Fi`에서 디바이스를 Relay와 같은 LAN에 연결
+2. `OpenClaw -> Gateway`에서:
+   - URL: `ws://<relay_lan_ip>:18789`
+   - Auth Mode / Credential: OpenClaw Gateway와 동일하게 설정
+3. `OpenClaw -> Save & Apply`
+
+### 4) 연결 확인
+
+```bash
+openclaw nodes status
+openclaw nodes describe --node node-host
+```
+
+참고: `tailscale-iot`은 ESPHome/Headscale 중심의 별도 구현입니다. 이 레포는 Arduino 기반
+OpenClaw 노드 펌웨어이므로, 동일 방식으로 직접 통합하지 않고 Relay 구성을 기본 경로로 제공합니다.
 
 ## BLE 연결 범위
 

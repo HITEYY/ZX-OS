@@ -17,6 +17,237 @@ String boolLabel(bool value) {
   return value ? "Yes" : "No";
 }
 
+void markDirty(AppContext &ctx) {
+  ctx.configDirty = true;
+}
+
+void editHiddenWifi(AppContext &ctx,
+                    const std::function<void()> &backgroundTick) {
+  String ssid = ctx.config.wifiSsid;
+  String password = ctx.config.wifiPassword;
+
+  if (!ctx.ui->textInput("Wi-Fi SSID", ssid, false, backgroundTick)) {
+    return;
+  }
+  if (!ctx.ui->textInput("Wi-Fi Password", password, true, backgroundTick)) {
+    return;
+  }
+
+  ctx.config.wifiSsid = ssid;
+  ctx.config.wifiPassword = password;
+  markDirty(ctx);
+  ctx.ui->showToast("Wi-Fi", "Credentials updated", 1200, backgroundTick);
+}
+
+void scanAndSelectWifi(AppContext &ctx,
+                       const std::function<void()> &backgroundTick) {
+  std::vector<String> ssids;
+  String err;
+  if (!ctx.wifi->scanNetworks(ssids, &err)) {
+    String message = err.isEmpty() ? String("Wi-Fi scan failed") : err;
+    message += " / use Hidden SSID";
+    ctx.ui->showToast("Wi-Fi Scan", message, 1800, backgroundTick);
+    return;
+  }
+
+  std::vector<String> menu = ssids;
+  menu.push_back("Hidden SSID");
+  menu.push_back("Back");
+
+  int selected = 0;
+  const int choice = ctx.ui->menuLoop("Wi-Fi Scan",
+                                       menu,
+                                       selected,
+                                       backgroundTick,
+                                       "OK Select  BACK Exit",
+                                       "Pick SSID");
+
+  if (choice < 0 || choice == static_cast<int>(menu.size()) - 1) {
+    return;
+  }
+
+  if (menu[static_cast<size_t>(choice)] == "Hidden SSID") {
+    editHiddenWifi(ctx, backgroundTick);
+    return;
+  }
+
+  const String selectedSsid = menu[static_cast<size_t>(choice)];
+  String password = ctx.config.wifiPassword;
+  if (!ctx.ui->textInput("Wi-Fi Password", password, true, backgroundTick)) {
+    return;
+  }
+
+  ctx.config.wifiSsid = selectedSsid;
+  ctx.config.wifiPassword = password;
+  markDirty(ctx);
+  ctx.ui->showToast("Wi-Fi", "Credentials updated", 1200, backgroundTick);
+}
+
+void runWifiMenu(AppContext &ctx,
+                 const std::function<void()> &backgroundTick) {
+  int selected = 0;
+
+  while (true) {
+    std::vector<String> menu;
+    menu.push_back("Scan Networks");
+    menu.push_back("Hidden SSID");
+    menu.push_back("Clear Wi-Fi");
+    menu.push_back("Back");
+
+    const String subtitle = ctx.config.wifiSsid.isEmpty()
+                                ? String("SSID: (empty)")
+                                : String("SSID: ") + ctx.config.wifiSsid;
+
+    const int choice = ctx.ui->menuLoop("OpenClaw / Wi-Fi",
+                                        menu,
+                                        selected,
+                                        backgroundTick,
+                                        "OK Select  BACK Exit",
+                                        subtitle);
+    if (choice < 0 || choice == 3) {
+      return;
+    }
+    selected = choice;
+
+    if (choice == 0) {
+      scanAndSelectWifi(ctx, backgroundTick);
+    } else if (choice == 1) {
+      editHiddenWifi(ctx, backgroundTick);
+    } else if (choice == 2) {
+      ctx.config.wifiSsid = "";
+      ctx.config.wifiPassword = "";
+      markDirty(ctx);
+      ctx.ui->showToast("Wi-Fi", "Wi-Fi config cleared", 1200, backgroundTick);
+    }
+  }
+}
+
+void runGatewayMenu(AppContext &ctx,
+                    const std::function<void()> &backgroundTick) {
+  int selected = 0;
+
+  while (true) {
+    std::vector<String> menu;
+    menu.push_back("Edit URL");
+    menu.push_back("Auth Mode");
+    menu.push_back("Edit Credential");
+    menu.push_back("Clear Gateway");
+    menu.push_back("Back");
+
+    String subtitle = "Auth: ";
+    subtitle += gatewayAuthModeName(ctx.config.gatewayAuthMode);
+
+    const int choice = ctx.ui->menuLoop("OpenClaw / Gateway",
+                                        menu,
+                                        selected,
+                                        backgroundTick,
+                                        "OK Select  BACK Exit",
+                                        subtitle);
+    if (choice < 0 || choice == 4) {
+      return;
+    }
+    selected = choice;
+
+    if (choice == 0) {
+      String url = ctx.config.gatewayUrl;
+      if (ctx.ui->textInput("Gateway URL", url, false, backgroundTick)) {
+        ctx.config.gatewayUrl = url;
+        markDirty(ctx);
+      }
+      continue;
+    }
+
+    if (choice == 1) {
+      std::vector<String> authItems;
+      authItems.push_back("Token");
+      authItems.push_back("Password");
+
+      const int current = ctx.config.gatewayAuthMode == GatewayAuthMode::Password ? 1 : 0;
+      const int authChoice = ctx.ui->menuLoop("Gateway Auth",
+                                              authItems,
+                                              current,
+                                              backgroundTick,
+                                              "OK Select  BACK Exit",
+                                              "Choose auth mode");
+      if (authChoice >= 0) {
+        ctx.config.gatewayAuthMode = authChoice == 1
+                                         ? GatewayAuthMode::Password
+                                         : GatewayAuthMode::Token;
+        markDirty(ctx);
+      }
+      continue;
+    }
+
+    if (choice == 2) {
+      if (ctx.config.gatewayAuthMode == GatewayAuthMode::Password) {
+        String password = ctx.config.gatewayPassword;
+        if (ctx.ui->textInput("Gateway Password", password, true, backgroundTick)) {
+          ctx.config.gatewayPassword = password;
+          markDirty(ctx);
+        }
+      } else {
+        String token = ctx.config.gatewayToken;
+        if (ctx.ui->textInput("Gateway Token", token, true, backgroundTick)) {
+          ctx.config.gatewayToken = token;
+          markDirty(ctx);
+        }
+      }
+      continue;
+    }
+
+    if (choice == 3) {
+      ctx.config.gatewayUrl = "";
+      ctx.config.gatewayToken = "";
+      ctx.config.gatewayPassword = "";
+      markDirty(ctx);
+      ctx.ui->showToast("Gateway", "Gateway config cleared", 1200, backgroundTick);
+      continue;
+    }
+  }
+}
+
+void applyRuntimeConfig(AppContext &ctx,
+                        const std::function<void()> &backgroundTick) {
+  String validateErr;
+  if (!validateConfig(ctx.config, &validateErr)) {
+    ctx.ui->showToast("Validation", validateErr, 1800, backgroundTick);
+    return;
+  }
+
+  String saveErr;
+  if (!saveConfig(ctx.config, &saveErr)) {
+    String message = saveErr.isEmpty() ? String("Failed to save config") : saveErr;
+    message += " / previous config kept";
+    ctx.ui->showToast("Save Error", message, 1900, backgroundTick);
+    return;
+  }
+
+  ctx.configDirty = false;
+
+  ctx.wifi->configure(ctx.config);
+  ctx.gateway->configure(ctx.config);
+  ctx.ble->configure(ctx.config);
+
+  if (!ctx.config.gatewayUrl.isEmpty() && hasGatewayCredentials(ctx.config)) {
+    ctx.gateway->reconnectNow();
+  } else {
+    ctx.gateway->disconnectNow();
+  }
+
+  if (ctx.config.bleDeviceAddress.isEmpty()) {
+    ctx.ble->disconnectNow();
+  } else if (ctx.config.bleAutoConnect) {
+    String bleErr;
+    if (!ctx.ble->connectToDevice(ctx.config.bleDeviceAddress,
+                                  ctx.config.bleDeviceName,
+                                  &bleErr)) {
+      ctx.ui->showToast("BLE", bleErr, 1500, backgroundTick);
+    }
+  }
+
+  ctx.ui->showToast("OpenClaw", "Saved and applied", 1400, backgroundTick);
+}
+
 std::vector<String> buildStatusLines(AppContext &ctx) {
   std::vector<String> lines;
 
@@ -26,7 +257,7 @@ std::vector<String> buildStatusLines(AppContext &ctx) {
 
   lines.push_back("Config Valid: " + boolLabel(configOk));
   if (!configOk) {
-    lines.push_back("Setting app input required");
+    lines.push_back("OpenClaw settings required");
     lines.push_back("Config Error: " + cfgErr);
   }
   lines.push_back("Wi-Fi Connected: " + boolLabel(ctx.wifi->isConnected()));
@@ -73,9 +304,15 @@ void runOpenClawApp(AppContext &ctx,
     subtitle += ctx.wifi->isConnected() ? "UP " : "DOWN ";
     subtitle += "GW:";
     subtitle += gs.gatewayReady ? "READY" : (gs.wsConnected ? "WS" : "IDLE");
+    if (ctx.configDirty) {
+      subtitle += " *DIRTY";
+    }
 
     std::vector<String> menu;
     menu.push_back("Status");
+    menu.push_back("Wi-Fi");
+    menu.push_back("Gateway");
+    menu.push_back("Save & Apply");
     menu.push_back("Connect");
     menu.push_back("Disconnect");
     menu.push_back("Reconnect");
@@ -88,7 +325,7 @@ void runOpenClawApp(AppContext &ctx,
                                         "OK Select  BACK Exit",
                                         subtitle);
 
-    if (choice < 0 || choice == 4) {
+    if (choice < 0 || choice == 7) {
       return;
     }
 
@@ -103,6 +340,21 @@ void runOpenClawApp(AppContext &ctx,
     }
 
     if (choice == 1) {
+      runWifiMenu(ctx, backgroundTick);
+      continue;
+    }
+
+    if (choice == 2) {
+      runGatewayMenu(ctx, backgroundTick);
+      continue;
+    }
+
+    if (choice == 3) {
+      applyRuntimeConfig(ctx, backgroundTick);
+      continue;
+    }
+
+    if (choice == 4) {
       String validateErr;
       if (!validateConfig(ctx.config, &validateErr)) {
         ctx.ui->showToast("Config Error", validateErr, 1800, backgroundTick);
@@ -121,13 +373,13 @@ void runOpenClawApp(AppContext &ctx,
       continue;
     }
 
-    if (choice == 2) {
+    if (choice == 5) {
       ctx.gateway->disconnectNow();
       ctx.ui->showToast("OpenClaw", "Disconnected", 1200, backgroundTick);
       continue;
     }
 
-    if (choice == 3) {
+    if (choice == 6) {
       String validateErr;
       if (!validateConfig(ctx.config, &validateErr)) {
         ctx.ui->showToast("Config Error", validateErr, 1800, backgroundTick);

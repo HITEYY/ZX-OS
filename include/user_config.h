@@ -5,7 +5,10 @@
 #define USER_WIFI_PASSWORD "REPLACE_WITH_WIFI_PASSWORD"
 
 // OpenClaw gateway URL: ws://host:port or wss://host:port
-#define USER_GATEWAY_URL "ws://127.0.0.1:18789"
+// Examples:
+//   - LAN/Tailscale relay: ws://192.168.0.20:18789
+//   - Direct TLS endpoint:  wss://gateway.example.com:443
+#define USER_GATEWAY_URL "REPLACE_WITH_GATEWAY_URL"
 
 // Provide either token or password configured on the gateway.
 #define USER_GATEWAY_TOKEN "REPLACE_WITH_GATEWAY_TOKEN"
