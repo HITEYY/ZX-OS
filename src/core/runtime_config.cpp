@@ -162,7 +162,8 @@ bool loadConfig(RuntimeConfig &outConfig,
   RuntimeConfig config = makeDefaultConfig();
 
   Preferences prefs;
-  const bool opened = prefs.begin(kPrefsNamespace, true);
+  // Open read-write so first boot can create namespace without noisy NOT_FOUND log.
+  const bool opened = prefs.begin(kPrefsNamespace, false);
   if (!opened) {
     if (loadedFromNvs) {
       *loadedFromNvs = false;

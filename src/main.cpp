@@ -1,6 +1,10 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
+#include <Wire.h>
+
+#define XPOWERS_CHIP_BQ25896
+#include <XPowersLib.h>
 
 #include <vector>
 
@@ -9,6 +13,7 @@
 #include "apps/settings_app.h"
 #include "core/cc1101_radio.h"
 #include "core/ble_manager.h"
+#include "core/board_pins.h"
 #include "core/gateway_client.h"
 #include "core/node_command_handler.h"
 #include "core/runtime_config.h"
@@ -23,6 +28,7 @@ GatewayClient gGateway;
 BleManager gBle;
 NodeCommandHandler gNodeHandler;
 AppContext gAppContext;
+XPowersPPM gPmu;
 
 void runBackgroundTick() {
   gWifi.tick();
@@ -64,6 +70,23 @@ void configureGatewayCallbacks() {
   });
 }
 
+void initBoardPower() {
+  // T-Embed CC1101 needs this rail enabled for TFT/backlight/radio domain.
+  pinMode(boardpins::kPowerEnable, OUTPUT);
+  digitalWrite(boardpins::kPowerEnable, HIGH);
+  delay(30);
+
+  Wire.begin(8, 18);
+  if (gPmu.init(Wire, 8, 18, BQ25896_SLAVE_ADDRESS)) {
+    gPmu.resetDefault();
+    gPmu.setChargeTargetVoltage(4208);
+    gPmu.enableMeasure(PowersBQ25896::CONTINUOUS);
+    Serial.println("[boot] pmu ready");
+  } else {
+    Serial.println("[boot] pmu init failed");
+  }
+}
+
 void runLauncher() {
   static int selected = 0;
 
@@ -96,12 +119,27 @@ void setup() {
   Serial.begin(115200);
   delay(400);
 
+  Serial.println("[boot] start");
+
+  // Keep shared SPI devices deselected before any peripheral init.
+  pinMode(boardpins::kTftCs, OUTPUT);
+  digitalWrite(boardpins::kTftCs, HIGH);
+  pinMode(boardpins::kSdCs, OUTPUT);
+  digitalWrite(boardpins::kSdCs, HIGH);
+  pinMode(boardpins::kCc1101Cs, OUTPUT);
+  digitalWrite(boardpins::kCc1101Cs, HIGH);
+
+  initBoardPower();
+
+  Serial.println("[boot] ui.begin()");
   gUi.begin();
 
+  Serial.println("[boot] cc1101.init()");
   const bool ccReady = initCc1101Radio();
   if (!ccReady) {
     gUi.showToast("CC1101", "CC1101 not detected", 1500, []() {});
   }
+  Serial.println(ccReady ? "[boot] cc1101 ready" : "[boot] cc1101 missing");
 
   bool loadedFromNvs = false;
   String loadErr;

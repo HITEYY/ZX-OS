@@ -4,16 +4,17 @@
 #include <RCSwitch.h>
 #include <SPI.h>
 
+#include "board_pins.h"
 #include "user_config.h"
 
 namespace {
 
 // Pin mapping from BruceFirmware T-Embed CC1101 profile (T_EMBED_1101).
-constexpr uint8_t PIN_POWER_ON = 15;
+constexpr uint8_t PIN_POWER_ON = boardpins::kPowerEnable;
 constexpr uint8_t CC1101_GDO0_PIN = 3;
 constexpr uint8_t CC1101_SW1_PIN = 47;
 constexpr uint8_t CC1101_SW0_PIN = 48;
-constexpr uint8_t CC1101_SS_PIN = 12;
+constexpr uint8_t CC1101_SS_PIN = boardpins::kCc1101Cs;
 constexpr uint8_t CC1101_MISO_PIN = 10;
 constexpr uint8_t CC1101_MOSI_PIN = 9;
 constexpr uint8_t CC1101_SCK_PIN = 11;
@@ -58,6 +59,12 @@ bool initCc1101Radio() {
   pinMode(PIN_POWER_ON, OUTPUT);
   digitalWrite(PIN_POWER_ON, HIGH);
 
+  // Shared SPI bus lines must keep other devices deselected.
+  pinMode(boardpins::kTftCs, OUTPUT);
+  digitalWrite(boardpins::kTftCs, HIGH);
+  pinMode(boardpins::kSdCs, OUTPUT);
+  digitalWrite(boardpins::kSdCs, HIGH);
+
   pinMode(CC1101_SW1_PIN, OUTPUT);
   pinMode(CC1101_SW0_PIN, OUTPUT);
   pinMode(CC1101_SS_PIN, OUTPUT);
@@ -65,7 +72,10 @@ bool initCc1101Radio() {
 
   delay(CC1101_BOOT_SETTLE_MS);
 
-  SPI.begin(CC1101_SCK_PIN, CC1101_MISO_PIN, CC1101_MOSI_PIN, CC1101_SS_PIN);
+  // UI(TFT_eSPI) already initializes the shared SPI bus on this board.
+  // Re-beginning the same bus can trigger duplicate APB callback logs.
+  ELECHOUSE_cc1101.setBeginEndLogic(false);
+  ELECHOUSE_cc1101.setSPIinstance(&SPI);
   ELECHOUSE_cc1101.setSpiPin(CC1101_SCK_PIN,
                              CC1101_MISO_PIN,
                              CC1101_MOSI_PIN,

@@ -7,14 +7,16 @@
 
 #include <time.h>
 
+#include "../core/board_pins.h"
 #include "user_config.h"
 
 namespace {
 
-constexpr uint8_t PIN_ENCODER_A = 4;
-constexpr uint8_t PIN_ENCODER_B = 5;
-constexpr uint8_t PIN_OK = 0;
-constexpr uint8_t PIN_BACK = 6;
+constexpr uint8_t PIN_ENCODER_A = boardpins::kEncoderA;
+constexpr uint8_t PIN_ENCODER_B = boardpins::kEncoderB;
+constexpr uint8_t PIN_OK = boardpins::kEncoderOk;
+constexpr uint8_t PIN_BACK = boardpins::kEncoderBack;
+constexpr uint8_t PIN_POWER_ON = boardpins::kPowerEnable;
 
 constexpr unsigned long kDebounceMs = 35UL;
 constexpr unsigned long kLongPressMs = 750UL;
@@ -25,6 +27,12 @@ constexpr int kRowHeight = 16;
 constexpr unsigned long kHeaderRefreshMs = 1000UL;
 constexpr unsigned long kBatteryPollMs = 5000UL;
 constexpr unsigned long kNtpRetryMs = 30000UL;
+
+void enableBacklight() {
+  pinMode(boardpins::kTftBacklight, OUTPUT);
+  digitalWrite(boardpins::kTftBacklight, HIGH);
+  analogWrite(boardpins::kTftBacklight, 254);
+}
 
 int wrapIndex(int value, int count) {
   if (count <= 0) {
@@ -96,6 +104,7 @@ class UIShell::Impl {
     static bool wireReady = false;
     if (!wireReady) {
       Wire.begin(USER_BATTERY_GAUGE_SDA, USER_BATTERY_GAUGE_SCL);
+      Wire.setTimeOut(5);
       wireReady = true;
     }
 
@@ -259,18 +268,35 @@ class UIShell::Impl {
 UIShell::UIShell() : impl_(new Impl()) {}
 
 void UIShell::begin() {
+  pinMode(boardpins::kTftCs, OUTPUT);
+  digitalWrite(boardpins::kTftCs, HIGH);
+  pinMode(boardpins::kSdCs, OUTPUT);
+  digitalWrite(boardpins::kSdCs, HIGH);
+  pinMode(boardpins::kCc1101Cs, OUTPUT);
+  digitalWrite(boardpins::kCc1101Cs, HIGH);
+
+  pinMode(PIN_POWER_ON, OUTPUT);
+  digitalWrite(PIN_POWER_ON, HIGH);
+  delay(20);
+  enableBacklight();
+
   pinMode(PIN_OK, INPUT_PULLUP);
   pinMode(PIN_BACK, INPUT_PULLUP);
 
+  Serial.println("[ui] tft.init()");
   impl_->tft.init();
   impl_->tft.setRotation(3);
-  impl_->tft.fillScreen(TFT_BLACK);
+  impl_->tft.fillScreen(TFT_NAVY);
   impl_->tft.setTextFont(1);
   impl_->tft.setTextSize(1);
+  impl_->tft.setTextColor(TFT_WHITE, TFT_NAVY);
+  impl_->tft.setCursor(6, 8);
+  impl_->tft.print("Booting...");
+  delay(120);
+  impl_->tft.fillScreen(TFT_BLACK);
   impl_->tft.setTextColor(TFT_WHITE, TFT_BLACK);
 
-  pinMode(TFT_BL, OUTPUT);
-  digitalWrite(TFT_BL, HIGH);
+  enableBacklight();
 
   impl_->encoder.setPosition(0);
   impl_->lastEncoderPos = 0;
@@ -283,7 +309,7 @@ UiEvent UIShell::pollInput() {
   const int32_t pos = impl_->encoder.getPosition();
   const int32_t delta = pos - impl_->lastEncoderPos;
   if (delta != 0) {
-    event.delta = static_cast<int>(delta);
+    event.delta = -static_cast<int>(delta);
     impl_->lastEncoderPos = pos;
   }
 
