@@ -6,7 +6,7 @@
 
 // OpenClaw gateway URL: ws://host:port or wss://host:port
 // Examples:
-//   - LAN/Tailscale relay: ws://192.168.0.20:18789
+//   - Tailnet direct gateway: ws://100.100.0.20:18789
 //   - Direct TLS endpoint:  wss://gateway.example.com:443
 #define USER_GATEWAY_URL "REPLACE_WITH_GATEWAY_URL"
 
@@ -17,14 +17,10 @@
 // Default auth mode seed: 0=token, 1=password
 #define USER_GATEWAY_AUTH_MODE 0
 
-// Optional Tailscale relay-login defaults.
-// Used by Tailscale app to call a relay-side API for tailscale login/logout/status.
+// Optional Tailscale defaults.
+// `Auth Key` is required when Lite mode is enabled.
 #define USER_TAILSCALE_LOGIN_SERVER ""
 #define USER_TAILSCALE_AUTH_KEY ""
-#define USER_TAILSCALE_RELAY_API_HOST ""
-#define USER_TAILSCALE_RELAY_API_PORT 9080
-#define USER_TAILSCALE_RELAY_API_BASE_PATH "/api/tailscale"
-#define USER_TAILSCALE_RELAY_API_TOKEN ""
 
 // Optional APPMarket defaults.
 // Format: owner/repo (example: myorg/myfirmware)
@@ -32,7 +28,7 @@
 // Release asset file name (example: t-embed-cc1101.bin)
 #define USER_APPMARKET_RELEASE_ASSET ""
 
-// Optional Relay-less Tailscale Lite defaults (WireGuard direct).
+// Optional Tailscale Lite defaults (WireGuard direct).
 // Fill these only when using native lite tunnel mode.
 #define USER_TAILSCALE_LITE_ENABLED false
 #define USER_TAILSCALE_LITE_NODE_IP ""

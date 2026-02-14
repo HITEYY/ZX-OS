@@ -7,7 +7,7 @@ LilyGo T-Embed CC1101 보드를 OpenClaw Remote Gateway에 `node`로 연결하�
 - `OpenClaw` 앱: 상태 확인 + Gateway 설정 + Save & Apply + Connect/Disconnect/Reconnect
 - `Setting` 앱: Wi-Fi 설정 + BLE 스캔/연결/저장(재접속 대상) + System(Factory Reset)
 - `File Explorer` 앱: SD 카드 마운트/용량 확인/디렉토리 탐색/텍스트 미리보기/Quick Format
-- `Tailscale` 앱: Relay(host/port/path/ws/wss) 설정 + TCP 프로브 + Relay API Login/Logout/Status + Lite Direct(WireGuard, no relay) + OpenClaw URL 반영
+- `Tailscale` 앱: Lite Direct(WireGuard) 설정 + Auth Key/.env 로드 + OpenClaw URL 반영
 - `APPMarket` 앱: GitHub 최신 릴리스 조회/다운로드 + SD 패키지 관리 + 펌웨어 설치/재설치/백업
 
 ## 핵심 기능
@@ -20,7 +20,7 @@ LilyGo T-Embed CC1101 보드를 OpenClaw Remote Gateway에 `node`로 연결하�
   - `cc1101.set_freq`
   - `cc1101.tx`
 - 설정 영구 저장(SD: `/oc_cfg.json`, NVS 백업: namespace `oc_cfg`)
-- Relay 없이 사용할 수 있는 `Tailscale Lite`(WireGuard direct) 모드
+- `Tailscale Lite`(WireGuard direct) 직접 연결 모드
 - Bruce 스타일 QWERTY 입력(온디바이스 키보드)
   - 전체 QWERTY 키보드 동시 표시 + `DONE/CAPS/DEL/SPACE/CANCEL`
   - ROT로 키 이동, OK로 입력, BACK으로 취소
@@ -64,7 +64,8 @@ pio device monitor -b 115200
 1. `Setting -> Wi-Fi`
 - `Scan Networks`로 SSID 선택 + 비밀번호 입력
 - `Hidden SSID`로 수동 SSID/비밀번호 입력
-- 저장 전에도 `Connect Now`로 즉시 연결 시도 가능
+- SSID/비밀번호 변경 시 즉시 저장(SD `/oc_cfg.json` + NVS backup)
+- `Connect Now`로 즉시 재연결 시도 가능
 
 2. `OpenClaw -> Gateway`
 - URL 입력 (`ws://` 또는 `wss://`)
@@ -101,95 +102,30 @@ pio device monitor -b 115200
 - `Delete Latest Package` / `Delete Backup Package`: SD 패키지 삭제
 - `Save Config`: APPMarket 설정(repo/asset) 저장
 
-## Tailscale로 OpenClaw 연결
+## Tailscale Lite (WireGuard direct)
 
 참고한 문서/프로젝트:
 
 - [tailscale-iot](https://github.com/alfs/tailscale-iot)
 - [Tailscale small binaries](https://tailscale.com/docs/how-to/set-up-small-tailscale)
 
-이 펌웨어는 Tailscale 클라이언트를 직접 내장하지 않습니다. 대신 같은 LAN에 있는
-소형 Tailscale 노드(라즈베리파이/OpenWrt 등)에서 TCP relay를 띄우면, 현재 펌웨어
-수정 없이 OpenClaw Gateway를 Tailscale 경유로 사용할 수 있습니다.
-
-`tailscale-iot`의 인증 개념(auth key + login server)은 이 프로젝트에서
-**Relay API 로그인 방식**으로 반영했습니다.
-
-연결 구조:
-
-```text
-T-Embed(ESP32) --ws://LAN_RELAY_IP:18789--> Relay 노드 --Tailscale--> OpenClaw Gateway
-```
-
-### 1) Relay 노드 준비
-
-- Relay 노드에 Tailscale을 설치하고 tailnet에 조인합니다.
-- Relay 노드에서 Gateway tailnet 주소(예: `100.x.y.z` 또는 `*.ts.net`)로 연결 가능한지 확인합니다.
-
-### 2) Relay 실행
-
-이 레포에 포함된 스크립트를 Relay 노드에서 실행합니다.
-
-```bash
-./scripts/tailscale_openclaw_relay.sh <gateway_tailnet_host_or_ip> 18789 18789
-```
-
-예시:
-
-```bash
-./scripts/tailscale_openclaw_relay.sh openclaw-gateway.tailnet.ts.net
-```
-
-선택: 디바이스에서 로그인 제어하려면 Relay API를 추가로 실행합니다.
-
-```bash
-./scripts/tailscale_relay_api.py --host 0.0.0.0 --port 9080 --base-path /api/tailscale
-```
-
-### 3) 디바이스 설정
-
-1. `Setting -> Wi-Fi`에서 디바이스를 Relay와 같은 LAN에 연결
-2. `OpenClaw -> Gateway`에서:
-   - URL: `ws://<relay_lan_ip>:18789`
-   - Auth Mode / Credential: OpenClaw Gateway와 동일하게 설정
-3. `Tailscale` 앱에서:
-   - `Relay API Host/IP`: `<relay_lan_ip>`
-   - `Relay API Port`: `9080`
-   - `Relay API Token`: (`RELAY_API_TOKEN` 또는 `--token-file` 사용 시 동일 값)
-   - 로그인은 **Auth Key 필수** (`Relay Login`)
-   - Auth Key는 직접 입력하거나 `Login from SD .env`로 SD 카드 `.env` 파일에서 선택 가능
-   - `.env` 키 예시: `TAILSCALE_AUTH_KEY`, `TAILSCALE_AUTHKEY`, `TS_AUTHKEY`
-   - (선택) `.env` 또는 UI의 `Login Server URL`로 Headscale URL 지정 가능
-4. `OpenClaw -> Save & Apply`
-
-### 4) 연결 확인
-
-```bash
-openclaw nodes status
-openclaw nodes describe --node node-host
-```
-
-참고: `tailscale-iot`은 ESPHome/Headscale 중심의 별도 구현입니다. 이 레포는 Arduino 기반
-OpenClaw 노드 펌웨어이므로, 동일 방식으로 직접 통합하지 않고 Relay 구성을 기본 경로로 제공합니다.
-
-보안 주의: `tailscale_relay_api.py`는 로컬 네트워크 제어 API이므로,
-필요 시 방화벽/분리망/토큰 헤더(`--token-file`)로 보호하세요.
-
-## Relay 없이 Tailscale Lite (WireGuard direct)
-
-`Tailscale` 앱에서 `Lite` 항목을 사용하면 Relay 없이 ESP32 내부 WireGuard 터널을 올릴 수 있습니다.
-이 경로는 **데이터 경로에 relay가 필요 없습니다**.
+`Tailscale` 앱은 Lite Direct(WireGuard)만 제공합니다.
 보안 정책 일관성을 위해 Lite 모드도 `Auth Key`가 비어 있으면 저장/적용되지 않습니다.
 
 - 메뉴:
+  - `Auth Key`
+  - `Auth Load from SD .env`
+  - `Lite Quick Setup from SD .env`
   - `Lite Enabled`
-  - `Lite Node IP`
-  - `Lite Private Key`
-  - `Lite Peer Host/IP`
-  - `Lite Peer Port` (기본 `41641`)
-  - `Lite Peer Public Key`
   - `Lite Connect` / `Lite Disconnect`
-  - `Lite Load from SD .env`
+
+디바이스 설정 순서:
+
+1. `Setting -> Wi-Fi`에서 네트워크 연결
+2. `OpenClaw -> Gateway`에서 Gateway URL/Auth 입력
+3. `Tailscale` 앱에서 `Auth Key` 또는 `Auth Load from SD .env`로 키 입력
+4. `Lite Quick Setup from SD .env` 실행 (Lite 터널 설정 자동 적용)
+5. 필요 시 `Lite Connect`
 
 `.env` 키 예시:
 

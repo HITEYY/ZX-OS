@@ -15,6 +15,30 @@ void markDirty(AppContext &ctx) {
   ctx.configDirty = true;
 }
 
+bool saveSettingsConfig(AppContext &ctx,
+                        const std::function<void()> &backgroundTick,
+                        const char *toastTitle) {
+  String validateErr;
+  if (!validateConfig(ctx.config, &validateErr)) {
+    if (validateErr.isEmpty()) {
+      validateErr = "Config validation failed";
+    }
+    ctx.ui->showToast(toastTitle, validateErr, 1800, backgroundTick);
+    return false;
+  }
+
+  String saveErr;
+  if (!saveConfig(ctx.config, &saveErr)) {
+    String message = saveErr.isEmpty() ? String("Failed to save config") : saveErr;
+    message += " / previous config kept";
+    ctx.ui->showToast("Save Error", message, 1900, backgroundTick);
+    return false;
+  }
+
+  ctx.configDirty = false;
+  return true;
+}
+
 void requestWifiReconnect(AppContext &ctx,
                           const std::function<void()> &backgroundTick,
                           bool showToast) {
@@ -52,6 +76,7 @@ void editHiddenWifi(AppContext &ctx,
   ctx.config.wifiPassword = password;
   markDirty(ctx);
   requestWifiReconnect(ctx, backgroundTick, true);
+  saveSettingsConfig(ctx, backgroundTick, "Wi-Fi");
 }
 
 void scanAndSelectWifi(AppContext &ctx,
@@ -96,6 +121,7 @@ void scanAndSelectWifi(AppContext &ctx,
   ctx.config.wifiPassword = password;
   markDirty(ctx);
   requestWifiReconnect(ctx, backgroundTick, true);
+  saveSettingsConfig(ctx, backgroundTick, "Wi-Fi");
 }
 
 void runWifiMenu(AppContext &ctx,
@@ -144,6 +170,7 @@ void runWifiMenu(AppContext &ctx,
       ctx.config.wifiPassword = "";
       markDirty(ctx);
       requestWifiReconnect(ctx, backgroundTick, true);
+      saveSettingsConfig(ctx, backgroundTick, "Wi-Fi");
     }
   }
 }

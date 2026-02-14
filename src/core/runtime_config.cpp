@@ -210,19 +210,6 @@ bool writeConfigToSd(const String &blob, String *error = nullptr) {
   return true;
 }
 
-uint16_t sanitizeRelayApiPort(int value) {
-  if (value >= 1 && value <= 65535) {
-    return static_cast<uint16_t>(value);
-  }
-
-  if (USER_TAILSCALE_RELAY_API_PORT >= 1 &&
-      USER_TAILSCALE_RELAY_API_PORT <= 65535) {
-    return static_cast<uint16_t>(USER_TAILSCALE_RELAY_API_PORT);
-  }
-
-  return 9080;
-}
-
 uint16_t sanitizeLitePeerPort(int value) {
   if (value >= 1 && value <= 65535) {
     return static_cast<uint16_t>(value);
@@ -234,26 +221,6 @@ uint16_t sanitizeLitePeerPort(int value) {
   }
 
   return 41641;
-}
-
-String sanitizeRelayApiBasePath(const String &rawPath) {
-  String path = rawPath;
-  path.trim();
-
-  if (path.isEmpty()) {
-    path = USER_TAILSCALE_RELAY_API_BASE_PATH;
-  }
-  if (path.isEmpty()) {
-    path = "/api/tailscale";
-  }
-  if (!path.startsWith("/")) {
-    path = "/" + path;
-  }
-  while (path.length() > 1 && path.endsWith("/")) {
-    path.remove(path.length() - 1);
-  }
-
-  return path;
 }
 
 bool isValidIpv4Address(const String &value) {
@@ -355,10 +322,6 @@ void toJson(const RuntimeConfig &config, JsonObject obj) {
   obj["bleAutoConnect"] = config.bleAutoConnect;
   obj["tailscaleLoginServer"] = config.tailscaleLoginServer;
   obj["tailscaleAuthKey"] = config.tailscaleAuthKey;
-  obj["tailscaleRelayApiHost"] = config.tailscaleRelayApiHost;
-  obj["tailscaleRelayApiPort"] = config.tailscaleRelayApiPort;
-  obj["tailscaleRelayApiBasePath"] = config.tailscaleRelayApiBasePath;
-  obj["tailscaleRelayApiToken"] = config.tailscaleRelayApiToken;
   obj["appMarketGithubRepo"] = config.appMarketGithubRepo;
   obj["appMarketReleaseAsset"] = config.appMarketReleaseAsset;
   obj["tailscaleLiteEnabled"] = config.tailscaleLiteEnabled;
@@ -385,15 +348,6 @@ void fromJson(const JsonObjectConst &obj, RuntimeConfig &config) {
       String(static_cast<const char *>(obj["tailscaleLoginServer"] | ""));
   config.tailscaleAuthKey =
       String(static_cast<const char *>(obj["tailscaleAuthKey"] | ""));
-  config.tailscaleRelayApiHost =
-      String(static_cast<const char *>(obj["tailscaleRelayApiHost"] | ""));
-  config.tailscaleRelayApiPort =
-      sanitizeRelayApiPort(obj["tailscaleRelayApiPort"] | USER_TAILSCALE_RELAY_API_PORT);
-  config.tailscaleRelayApiBasePath = sanitizeRelayApiBasePath(
-      String(static_cast<const char *>(obj["tailscaleRelayApiBasePath"] |
-                                       USER_TAILSCALE_RELAY_API_BASE_PATH)));
-  config.tailscaleRelayApiToken =
-      String(static_cast<const char *>(obj["tailscaleRelayApiToken"] | ""));
   config.appMarketGithubRepo =
       String(static_cast<const char *>(obj["appMarketGithubRepo"] |
                                        USER_APPMARKET_GITHUB_REPO));
@@ -448,15 +402,6 @@ RuntimeConfig makeDefaultConfig() {
   }
   if (!isPlaceholder(USER_TAILSCALE_AUTH_KEY)) {
     config.tailscaleAuthKey = USER_TAILSCALE_AUTH_KEY;
-  }
-  if (!isPlaceholder(USER_TAILSCALE_RELAY_API_HOST)) {
-    config.tailscaleRelayApiHost = USER_TAILSCALE_RELAY_API_HOST;
-  }
-  config.tailscaleRelayApiPort = sanitizeRelayApiPort(USER_TAILSCALE_RELAY_API_PORT);
-  config.tailscaleRelayApiBasePath =
-      sanitizeRelayApiBasePath(USER_TAILSCALE_RELAY_API_BASE_PATH);
-  if (!isPlaceholder(USER_TAILSCALE_RELAY_API_TOKEN)) {
-    config.tailscaleRelayApiToken = USER_TAILSCALE_RELAY_API_TOKEN;
   }
   if (!isPlaceholder(USER_APPMARKET_GITHUB_REPO)) {
     config.appMarketGithubRepo = USER_APPMARKET_GITHUB_REPO;

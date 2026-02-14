@@ -1,12 +1,9 @@
 #include "tailscale_app.h"
 
-#include <ArduinoJson.h>
-#include <HTTPClient.h>
 #include <SD.h>
 #include <SPI.h>
 #include <TFT_eSPI.h>
 #include <WiFi.h>
-#include <WiFiClient.h>
 
 #include <algorithm>
 #include <vector>
@@ -20,13 +17,6 @@
 #include "../ui/ui_shell.h"
 
 namespace {
-
-struct RelayTarget {
-  String host;
-  uint16_t port = 18789;
-  String path = "/";
-  bool secure = false;
-};
 
 struct EnvFileEntry {
   String fullPath;
@@ -402,10 +392,10 @@ bool parseEnvFileForLite(const String &path,
                key == "headscale_url") {
       profileOut.loginServer = value;
     } else if (key == "TAILSCALE_LITE_NODE_IP" ||
-        key == "TS_LITE_NODE_IP" ||
-        key == "TS_WG_LOCAL_IP" ||
-        key == "tailscale_lite_node_ip" ||
-        key == "ts_lite_node_ip") {
+               key == "TS_LITE_NODE_IP" ||
+               key == "TS_WG_LOCAL_IP" ||
+               key == "tailscale_lite_node_ip" ||
+               key == "ts_lite_node_ip") {
       profileOut.nodeIp = value;
     } else if (key == "TAILSCALE_LITE_PRIVATE_KEY" ||
                key == "TS_LITE_PRIVATE_KEY" ||
@@ -456,509 +446,44 @@ bool parseEnvFileForLite(const String &path,
   return true;
 }
 
-String normalizeApiBasePath(const String &rawPath) {
-  String path = rawPath;
-  path.trim();
-  if (path.isEmpty()) {
-    path = "/api/tailscale";
-  }
-  if (!path.startsWith("/")) {
-    path = "/" + path;
-  }
-  while (path.length() > 1 && path.endsWith("/")) {
-    path.remove(path.length() - 1);
-  }
-  return path;
-}
-
-String joinApiPath(const String &basePath, const String &endpoint) {
-  String path = normalizeApiBasePath(basePath);
-  String suffix = endpoint;
-  suffix.trim();
-
-  if (suffix.isEmpty()) {
-    return path;
-  }
-  if (suffix.startsWith("/")) {
-    return path + suffix;
-  }
-  return path + "/" + suffix;
-}
-
-bool performRelayApiRequest(const RuntimeConfig &config,
-                            const String &endpoint,
-                            const String &method,
-                            const String &requestBody,
-                            int &httpCode,
-                            String &responseBody,
-                            String &errorOut,
-                            String *urlOut = nullptr) {
-  if (config.tailscaleRelayApiHost.isEmpty()) {
-    errorOut = "Relay API host is empty";
-    return false;
-  }
-
-  if (WiFi.status() != WL_CONNECTED) {
-    errorOut = "Wi-Fi is not connected";
-    return false;
-  }
-
-  const String path = joinApiPath(config.tailscaleRelayApiBasePath, endpoint);
-  const String url = "http://" + config.tailscaleRelayApiHost + ":" +
-                     String(config.tailscaleRelayApiPort) + path;
-  if (urlOut) {
-    *urlOut = url;
-  }
-
-  HTTPClient http;
-  if (!http.begin(url)) {
-    errorOut = "HTTP begin failed";
-    return false;
-  }
-
-  http.setTimeout(3000);
-
-  int code = -1;
-  if (method == "GET") {
-    if (!config.tailscaleRelayApiToken.isEmpty()) {
-      http.addHeader("X-Relay-Token", config.tailscaleRelayApiToken);
-    }
-    code = http.GET();
-  } else if (method == "POST") {
-    http.addHeader("Content-Type", "application/json");
-    if (!config.tailscaleRelayApiToken.isEmpty()) {
-      http.addHeader("X-Relay-Token", config.tailscaleRelayApiToken);
-    }
-    code = http.POST(requestBody);
-  } else {
-    http.end();
-    errorOut = "Unsupported HTTP method";
-    return false;
-  }
-
-  String response;
-  if (code > 0) {
-    response = http.getString();
-  }
-  http.end();
-
-  httpCode = code;
-  responseBody = response;
-
-  if (code <= 0) {
-    errorOut = "HTTP request failed";
-    return false;
-  }
-
-  return true;
-}
-
-void appendWrappedLine(std::vector<String> &lines,
-                       const String &line,
-                       size_t width = 38) {
-  if (line.isEmpty()) {
-    lines.push_back(" ");
-    return;
-  }
-
-  size_t start = 0;
-  while (start < line.length()) {
-    size_t len = line.length() - start;
-    if (len > width) {
-      len = width;
-    }
-    lines.push_back(line.substring(start, start + len));
-    start += len;
-  }
-}
-
-void showRelayApiResponse(AppContext &ctx,
-                          const String &title,
-                          const String &url,
-                          int httpCode,
-                          const String &responseBody,
-                          const std::function<void()> &backgroundTick) {
-  std::vector<String> lines;
-  lines.push_back("URL: " + trimMiddle(url, 30));
-  lines.push_back("HTTP: " + String(httpCode));
-  lines.push_back("Response:");
-
-  if (responseBody.isEmpty()) {
-    lines.push_back("(empty)");
-  } else {
-    const size_t maxChars = 500;
-    String body = responseBody;
-    if (body.length() > maxChars) {
-      body = body.substring(0, maxChars);
-      body += "...";
-    }
-
-    int cursor = 0;
-    while (cursor <= static_cast<int>(body.length())) {
-      const int next = body.indexOf('\n', static_cast<unsigned int>(cursor));
-      if (next < 0) {
-        appendWrappedLine(lines, body.substring(static_cast<unsigned int>(cursor)));
-        break;
-      }
-      appendWrappedLine(lines,
-                        body.substring(static_cast<unsigned int>(cursor),
-                                       static_cast<unsigned int>(next)));
-      cursor = next + 1;
-      if (cursor >= static_cast<int>(body.length())) {
-        break;
-      }
-    }
-  }
-
-  ctx.ui->showInfo(title, lines, backgroundTick, "OK/BACK Exit");
-}
-
-void normalizeTarget(RelayTarget &target) {
-  if (target.port == 0) {
-    target.port = 18789;
-  }
-  if (target.path.isEmpty()) {
-    target.path = "/";
-  }
-  if (!target.path.startsWith("/")) {
-    target.path = "/" + target.path;
-  }
-}
-
-bool parseWsUrl(const String &rawUrl, RelayTarget &outTarget) {
-  if (rawUrl.isEmpty()) {
-    return false;
-  }
-
-  RelayTarget parsed;
-  String rest;
-
-  if (rawUrl.startsWith("ws://")) {
-    parsed.secure = false;
-    rest = rawUrl.substring(5);
-  } else if (rawUrl.startsWith("wss://")) {
-    parsed.secure = true;
-    rest = rawUrl.substring(6);
-  } else {
-    return false;
-  }
-
-  const int slash = rest.indexOf('/');
-  const String hostPort = slash >= 0 ? rest.substring(0, slash) : rest;
-  parsed.path = slash >= 0 ? rest.substring(slash) : "/";
-
-  if (hostPort.isEmpty()) {
-    return false;
-  }
-
-  parsed.port = parsed.secure ? 443 : 80;
-
-  if (hostPort.startsWith("[")) {
-    const int close = hostPort.indexOf(']');
-    if (close <= 1) {
-      return false;
-    }
-
-    parsed.host = hostPort.substring(1, static_cast<unsigned int>(close));
-    if (close + 1 < static_cast<int>(hostPort.length()) &&
-        hostPort[static_cast<unsigned int>(close + 1)] == ':') {
-      const String portText = hostPort.substring(static_cast<unsigned int>(close + 2));
-      uint16_t parsedPort = 0;
-      if (!parsePortNumber(portText, parsedPort)) {
-        return false;
-      }
-      parsed.port = parsedPort;
-    }
-  } else {
-    const int firstColon = hostPort.indexOf(':');
-    const int lastColon = hostPort.lastIndexOf(':');
-
-    if (firstColon > 0 && firstColon == lastColon) {
-      parsed.host = hostPort.substring(0, static_cast<unsigned int>(firstColon));
-      const String portText = hostPort.substring(static_cast<unsigned int>(firstColon + 1));
-      uint16_t parsedPort = 0;
-      if (!parsePortNumber(portText, parsedPort)) {
-        return false;
-      }
-      parsed.port = parsedPort;
-    } else {
-      parsed.host = hostPort;
-    }
-  }
-
-  if (parsed.host.isEmpty()) {
-    return false;
-  }
-
-  normalizeTarget(parsed);
-  outTarget = parsed;
-  return true;
-}
-
-String buildRelayUrl(const RelayTarget &targetRaw) {
-  RelayTarget target = targetRaw;
-  normalizeTarget(target);
-
-  String hostPart = target.host;
-  if (hostPart.indexOf(':') >= 0 && !hostPart.startsWith("[")) {
-    hostPart = "[" + hostPart + "]";
-  }
-
-  String url = target.secure ? "wss://" : "ws://";
-  url += hostPart;
-  url += ":";
-  url += String(target.port);
-  url += target.path;
-
-  return url;
-}
-
-void applyRelayUrlToConfig(AppContext &ctx,
-                           const RelayTarget &target,
-                           const std::function<void()> &backgroundTick) {
-  if (target.host.isEmpty()) {
-    ctx.ui->showToast("Tailscale", "Relay host is empty", 1500, backgroundTick);
-    return;
-  }
-
-  ctx.config.gatewayUrl = buildRelayUrl(target);
-  markDirty(ctx);
-  ctx.ui->showToast("Tailscale",
-                    "Gateway URL staged",
-                    1200,
-                    backgroundTick);
-}
-
-void probeRelay(AppContext &ctx,
-                const RelayTarget &target,
-                String &lastProbeResult,
-                const std::function<void()> &backgroundTick) {
-  if (target.host.isEmpty()) {
-    ctx.ui->showToast("Relay Probe", "Relay host is empty", 1500, backgroundTick);
-    return;
-  }
-
-  if (!ctx.wifi->isConnected()) {
-    ctx.ui->showToast("Relay Probe", "Wi-Fi is not connected", 1500, backgroundTick);
-    return;
-  }
-
-  std::vector<String> lines;
-  lines.push_back("Target: " + target.host + ":" + String(target.port));
-
-  IPAddress resolved;
-  if (WiFi.hostByName(target.host.c_str(), resolved) != 1) {
-    lines.push_back("DNS: failed");
-    lines.push_back("TCP: skipped");
-    lastProbeResult = "DNS fail";
-    ctx.ui->showInfo("Relay Probe", lines, backgroundTick, "OK/BACK Exit");
-    return;
-  }
-
-  lines.push_back("DNS: " + resolved.toString());
-
-  WiFiClient client;
-  client.setTimeout(1500);
-  const unsigned long startedAt = millis();
-  const bool connected = client.connect(target.host.c_str(), target.port);
-  const unsigned long elapsedMs = millis() - startedAt;
-
-  if (connected) {
-    lines.push_back("TCP: open");
-    lines.push_back("Latency: " + String(elapsedMs) + " ms");
-    lastProbeResult = "OK " + String(elapsedMs) + "ms";
-    client.stop();
-  } else {
-    lines.push_back("TCP: closed / timeout");
-    lines.push_back("Latency: " + String(elapsedMs) + " ms");
-    lastProbeResult = "TCP fail";
-  }
-
-  ctx.ui->showInfo("Relay Probe", lines, backgroundTick, "OK/BACK Exit");
-}
-
-void runRelayLogin(AppContext &ctx,
-                   String &lastLoginResult,
-                   const std::function<void()> &backgroundTick) {
-  if (ctx.config.tailscaleAuthKey.isEmpty()) {
-    ctx.ui->showToast("Tailscale Login",
-                      "Auth key is empty",
-                      1500,
-                      backgroundTick);
-    return;
-  }
-
-  DynamicJsonDocument req(512);
-  req["authKey"] = ctx.config.tailscaleAuthKey;
-  if (!ctx.config.tailscaleLoginServer.isEmpty()) {
-    req["loginServer"] = ctx.config.tailscaleLoginServer;
-  }
-
-  String body;
-  serializeJson(req, body);
-
-  int code = -1;
-  String response;
-  String err;
-  String url;
-  if (!performRelayApiRequest(ctx.config,
-                              "/login",
-                              "POST",
-                              body,
-                              code,
-                              response,
-                              err,
-                              &url)) {
-    lastLoginResult = err;
-    ctx.ui->showToast("Tailscale Login", err, 1800, backgroundTick);
-    return;
-  }
-
-  lastLoginResult = (code >= 200 && code < 300) ? "Login OK" : "Login fail";
-  showRelayApiResponse(ctx,
-                       "Tailscale Login",
-                       url,
-                       code,
-                       response,
-                       backgroundTick);
-}
-
-void runRelayLoginFromEnvFile(AppContext &ctx,
-                              String &lastLoginResult,
-                              const std::function<void()> &backgroundTick) {
-  String envPath;
-  if (!selectEnvFileFromSd(ctx, envPath, backgroundTick)) {
-    return;
-  }
-
-  String authKey;
-  String loginServer;
-  String err;
-  if (!parseEnvFileForAuth(envPath, authKey, loginServer, &err)) {
-    lastLoginResult = err;
-    ctx.ui->showToast("Tailscale .env", err, 1800, backgroundTick);
-    return;
-  }
-
-  ctx.config.tailscaleAuthKey = authKey;
-  if (!loginServer.isEmpty()) {
-    ctx.config.tailscaleLoginServer = loginServer;
-  }
-  markDirty(ctx);
-
-  String message = "Auth key loaded";
-  if (!loginServer.isEmpty()) {
-    message += " + login server";
-  }
-  ctx.ui->showToast("Tailscale .env", message, 1500, backgroundTick);
-
-  runRelayLogin(ctx, lastLoginResult, backgroundTick);
-}
-
-void runRelayLogout(AppContext &ctx,
-                    String &lastLoginResult,
-                    const std::function<void()> &backgroundTick) {
-  int code = -1;
-  String response;
-  String err;
-  String url;
-  if (!performRelayApiRequest(ctx.config,
-                              "/logout",
-                              "POST",
-                              "{}",
-                              code,
-                              response,
-                              err,
-                              &url)) {
-    lastLoginResult = err;
-    ctx.ui->showToast("Tailscale Logout", err, 1800, backgroundTick);
-    return;
-  }
-
-  lastLoginResult = (code >= 200 && code < 300) ? "Logout OK" : "Logout fail";
-  showRelayApiResponse(ctx,
-                       "Tailscale Logout",
-                       url,
-                       code,
-                       response,
-                       backgroundTick);
-}
-
-void runRelayStatus(AppContext &ctx,
-                    String &lastLoginResult,
-                    const std::function<void()> &backgroundTick) {
-  int code = -1;
-  String response;
-  String err;
-  String url;
-  if (!performRelayApiRequest(ctx.config,
-                              "/status",
-                              "GET",
-                              "",
-                              code,
-                              response,
-                              err,
-                              &url)) {
-    lastLoginResult = err;
-    ctx.ui->showToast("Tailscale Status", err, 1800, backgroundTick);
-    return;
-  }
-
-  lastLoginResult = (code >= 200 && code < 300) ? "Status OK" : "Status fail";
-  showRelayApiResponse(ctx,
-                       "Tailscale Status API",
-                       url,
-                       code,
-                       response,
-                       backgroundTick);
+bool hasLiteProfileConfig(const RuntimeConfig &config) {
+  return !config.tailscaleLiteNodeIp.isEmpty() &&
+         !config.tailscaleLitePrivateKey.isEmpty() &&
+         !config.tailscaleLitePeerHost.isEmpty() &&
+         !config.tailscaleLitePeerPublicKey.isEmpty() &&
+         config.tailscaleLitePeerPort > 0;
 }
 
 void showTailscaleStatus(AppContext &ctx,
-                         const RelayTarget &target,
-                         const String &lastProbeResult,
-                         const String &lastLoginResult,
+                         const String &lastAuthLoadResult,
+                         const String &lastLiteSetupResult,
                          const std::function<void()> &backgroundTick) {
   const GatewayStatus gatewayStatus = ctx.gateway->status();
   const TailscaleLiteStatus liteStatus =
       ctx.tailscaleLite ? ctx.tailscaleLite->status() : TailscaleLiteStatus();
 
   std::vector<String> lines;
-  lines.push_back("Tailscale mode: Relay API + Lite direct");
+  lines.push_back("Tailscale mode: Lite direct");
   lines.push_back("Wi-Fi Connected: " + boolLabel(ctx.wifi->isConnected()));
   lines.push_back("Wi-Fi SSID: " +
                   (ctx.wifi->ssid().isEmpty() ? String("(empty)") : ctx.wifi->ssid()));
   lines.push_back("Wi-Fi IP: " +
                   (ctx.wifi->ip().isEmpty() ? String("-") : ctx.wifi->ip()));
-
-  if (target.host.isEmpty()) {
-    lines.push_back("Relay Target: (not set)");
-  } else {
-    lines.push_back("Relay Target: " + target.host + ":" + String(target.port));
-    lines.push_back("Relay URL: " + buildRelayUrl(target));
-  }
-
   lines.push_back("Gateway URL: " +
                   (ctx.config.gatewayUrl.isEmpty() ? String("(empty)")
                                                    : ctx.config.gatewayUrl));
   lines.push_back("Auth Mode: " + String(gatewayAuthModeName(ctx.config.gatewayAuthMode)));
   lines.push_back("Credential Set: " + boolLabel(hasGatewayCredentials(ctx.config)));
-  lines.push_back("Probe: " + lastProbeResult);
 
   lines.push_back("Login Server: " +
                   (ctx.config.tailscaleLoginServer.isEmpty()
                        ? String("(default tailscale)")
                        : trimMiddle(ctx.config.tailscaleLoginServer, 26)));
   lines.push_back("Auth Key Set: " + boolLabel(!ctx.config.tailscaleAuthKey.isEmpty()));
-  lines.push_back("Relay API: " +
-                  (ctx.config.tailscaleRelayApiHost.isEmpty()
-                       ? String("(not set)")
-                       : ctx.config.tailscaleRelayApiHost + ":" +
-                             String(ctx.config.tailscaleRelayApiPort)));
-  lines.push_back("Relay API Path: " +
-                  normalizeApiBasePath(ctx.config.tailscaleRelayApiBasePath));
-  lines.push_back("Relay API Token: " +
-                  boolLabel(!ctx.config.tailscaleRelayApiToken.isEmpty()));
-  lines.push_back("Login API: " + lastLoginResult);
+  lines.push_back("Auth .env Load: " + lastAuthLoadResult);
+  lines.push_back("Lite Setup: " + lastLiteSetupResult);
+  lines.push_back("Lite Profile Ready: " + boolLabel(hasLiteProfileConfig(ctx.config)));
+
   lines.push_back("Lite Enabled: " + boolLabel(liteStatus.enabled));
   lines.push_back("Lite Tunnel: " + boolLabel(liteStatus.tunnelUp));
   lines.push_back("Lite Node IP: " +
@@ -1056,64 +581,6 @@ void requestGatewayConnect(AppContext &ctx,
   ctx.ui->showToast("Tailscale", "Connect requested", 1200, backgroundTick);
 }
 
-void editRelayHost(AppContext &ctx,
-                   RelayTarget &target,
-                   const std::function<void()> &backgroundTick) {
-  String host = target.host;
-  if (!ctx.ui->textInput("Relay Host/IP", host, false, backgroundTick)) {
-    return;
-  }
-
-  host.trim();
-  target.host = host;
-  ctx.ui->showToast("Tailscale", "Relay host updated", 1200, backgroundTick);
-}
-
-void editRelayPort(AppContext &ctx,
-                   RelayTarget &target,
-                   const std::function<void()> &backgroundTick) {
-  String portText = String(target.port);
-  if (!ctx.ui->textInput("Relay Port", portText, false, backgroundTick)) {
-    return;
-  }
-
-  uint16_t parsedPort = 0;
-  if (!parsePortNumber(portText, parsedPort)) {
-    ctx.ui->showToast("Tailscale", "Port must be 1..65535", 1500, backgroundTick);
-    return;
-  }
-
-  target.port = parsedPort;
-  ctx.ui->showToast("Tailscale", "Relay port updated", 1200, backgroundTick);
-}
-
-void editRelayPath(AppContext &ctx,
-                   RelayTarget &target,
-                   const std::function<void()> &backgroundTick) {
-  String path = target.path;
-  if (!ctx.ui->textInput("Relay Path", path, false, backgroundTick)) {
-    return;
-  }
-
-  path.trim();
-  target.path = path;
-  normalizeTarget(target);
-  ctx.ui->showToast("Tailscale", "Relay path updated", 1200, backgroundTick);
-}
-
-void editLoginServer(AppContext &ctx,
-                     const std::function<void()> &backgroundTick) {
-  String value = ctx.config.tailscaleLoginServer;
-  if (!ctx.ui->textInput("Login Server URL", value, false, backgroundTick)) {
-    return;
-  }
-
-  value.trim();
-  ctx.config.tailscaleLoginServer = value;
-  markDirty(ctx);
-  ctx.ui->showToast("Tailscale", "Login server updated", 1200, backgroundTick);
-}
-
 void editAuthKey(AppContext &ctx,
                  const std::function<void()> &backgroundTick) {
   String value = ctx.config.tailscaleAuthKey;
@@ -1127,6 +594,37 @@ void editAuthKey(AppContext &ctx,
   ctx.ui->showToast("Tailscale", "Auth key updated", 1200, backgroundTick);
 }
 
+void runAuthLoadFromEnvFile(AppContext &ctx,
+                            String &lastAuthLoadResult,
+                            const std::function<void()> &backgroundTick) {
+  String envPath;
+  if (!selectEnvFileFromSd(ctx, envPath, backgroundTick)) {
+    return;
+  }
+
+  String authKey;
+  String loginServer;
+  String err;
+  if (!parseEnvFileForAuth(envPath, authKey, loginServer, &err)) {
+    lastAuthLoadResult = err;
+    ctx.ui->showToast("Tailscale .env", err, 1800, backgroundTick);
+    return;
+  }
+
+  ctx.config.tailscaleAuthKey = authKey;
+  if (!loginServer.isEmpty()) {
+    ctx.config.tailscaleLoginServer = loginServer;
+  }
+  markDirty(ctx);
+
+  String message = "Auth key loaded";
+  if (!loginServer.isEmpty()) {
+    message += " + login server";
+  }
+  ctx.ui->showToast("Tailscale .env", message, 1500, backgroundTick);
+  lastAuthLoadResult = "Loaded";
+}
+
 void toggleLiteEnabled(AppContext &ctx,
                        const std::function<void()> &backgroundTick) {
   ctx.config.tailscaleLiteEnabled = !ctx.config.tailscaleLiteEnabled;
@@ -1137,78 +635,9 @@ void toggleLiteEnabled(AppContext &ctx,
                     backgroundTick);
 }
 
-void editLiteNodeIp(AppContext &ctx,
-                    const std::function<void()> &backgroundTick) {
-  String value = ctx.config.tailscaleLiteNodeIp;
-  if (!ctx.ui->textInput("Lite Node IP", value, false, backgroundTick)) {
-    return;
-  }
-
-  value.trim();
-  ctx.config.tailscaleLiteNodeIp = value;
-  markDirty(ctx);
-  ctx.ui->showToast("Tailscale Lite", "Node IP updated", 1200, backgroundTick);
-}
-
-void editLitePrivateKey(AppContext &ctx,
-                        const std::function<void()> &backgroundTick) {
-  String value = ctx.config.tailscaleLitePrivateKey;
-  if (!ctx.ui->textInput("Lite Private Key", value, true, backgroundTick)) {
-    return;
-  }
-
-  value.trim();
-  ctx.config.tailscaleLitePrivateKey = value;
-  markDirty(ctx);
-  ctx.ui->showToast("Tailscale Lite", "Private key updated", 1200, backgroundTick);
-}
-
-void editLitePeerHost(AppContext &ctx,
-                      const std::function<void()> &backgroundTick) {
-  String value = ctx.config.tailscaleLitePeerHost;
-  if (!ctx.ui->textInput("Lite Peer Host/IP", value, false, backgroundTick)) {
-    return;
-  }
-
-  value.trim();
-  ctx.config.tailscaleLitePeerHost = value;
-  markDirty(ctx);
-  ctx.ui->showToast("Tailscale Lite", "Peer host updated", 1200, backgroundTick);
-}
-
-void editLitePeerPort(AppContext &ctx,
-                      const std::function<void()> &backgroundTick) {
-  String value = String(ctx.config.tailscaleLitePeerPort);
-  if (!ctx.ui->textInput("Lite Peer Port", value, false, backgroundTick)) {
-    return;
-  }
-
-  uint16_t parsed = 0;
-  if (!parsePortNumber(value, parsed)) {
-    ctx.ui->showToast("Tailscale Lite", "Port must be 1..65535", 1500, backgroundTick);
-    return;
-  }
-
-  ctx.config.tailscaleLitePeerPort = parsed;
-  markDirty(ctx);
-  ctx.ui->showToast("Tailscale Lite", "Peer port updated", 1200, backgroundTick);
-}
-
-void editLitePeerPublicKey(AppContext &ctx,
-                           const std::function<void()> &backgroundTick) {
-  String value = ctx.config.tailscaleLitePeerPublicKey;
-  if (!ctx.ui->textInput("Lite Peer Public Key", value, true, backgroundTick)) {
-    return;
-  }
-
-  value.trim();
-  ctx.config.tailscaleLitePeerPublicKey = value;
-  markDirty(ctx);
-  ctx.ui->showToast("Tailscale Lite", "Peer public key updated", 1200, backgroundTick);
-}
-
-void runLiteLoadFromEnvFile(AppContext &ctx,
-                            const std::function<void()> &backgroundTick) {
+void runLiteQuickSetupFromEnvFile(AppContext &ctx,
+                                  String &lastLiteSetupResult,
+                                  const std::function<void()> &backgroundTick) {
   String envPath;
   if (!selectEnvFileFromSd(ctx, envPath, backgroundTick)) {
     return;
@@ -1217,6 +646,7 @@ void runLiteLoadFromEnvFile(AppContext &ctx,
   LiteEnvProfile profile;
   String err;
   if (!parseEnvFileForLite(envPath, profile, &err)) {
+    lastLiteSetupResult = err.isEmpty() ? String("Lite profile load failed") : err;
     ctx.ui->showToast("Tailscale Lite", err, 1800, backgroundTick);
     return;
   }
@@ -1227,25 +657,48 @@ void runLiteLoadFromEnvFile(AppContext &ctx,
   ctx.config.tailscaleLitePeerHost = profile.peerHost;
   ctx.config.tailscaleLitePeerPort = profile.peerPort;
   ctx.config.tailscaleLitePeerPublicKey = profile.peerPublicKey;
+
   if (!profile.authKey.isEmpty()) {
     ctx.config.tailscaleAuthKey = profile.authKey;
   }
   if (!profile.loginServer.isEmpty()) {
     ctx.config.tailscaleLoginServer = profile.loginServer;
   }
-  if (!profile.gatewayUrl.isEmpty()) {
-    ctx.config.gatewayUrl = profile.gatewayUrl;
-  }
-  markDirty(ctx);
 
-  String message = "Lite profile loaded";
+  bool gatewayApplied = false;
+  if (!profile.gatewayUrl.isEmpty() && hasGatewayCredentials(ctx.config)) {
+    ctx.config.gatewayUrl = profile.gatewayUrl;
+    gatewayApplied = true;
+  }
+
+  if (ctx.config.tailscaleAuthKey.isEmpty()) {
+    ctx.ui->showToast("Tailscale Lite",
+                      "Auth key required (set Auth or Auth from .env)",
+                      1900,
+                      backgroundTick);
+    lastLiteSetupResult = "Auth key missing";
+    return;
+  }
+
+  markDirty(ctx);
+  saveAndApply(ctx, backgroundTick);
+
+  if (ctx.configDirty) {
+    lastLiteSetupResult = "Save/apply failed";
+    return;
+  }
+
+  String message = "Lite setup applied";
   if (!profile.authKey.isEmpty()) {
     message += " + auth key";
   }
-  if (!profile.gatewayUrl.isEmpty()) {
+  if (gatewayApplied) {
     message += " + gateway URL";
+  } else if (!profile.gatewayUrl.isEmpty()) {
+    message += " (gateway skipped)";
   }
   ctx.ui->showToast("Tailscale Lite", message, 1600, backgroundTick);
+  lastLiteSetupResult = "Applied";
 }
 
 void runLiteConnect(AppContext &ctx,
@@ -1285,134 +738,39 @@ void runLiteDisconnect(AppContext &ctx,
   ctx.ui->showToast("Tailscale Lite", "Tunnel disconnected", 1200, backgroundTick);
 }
 
-void editRelayApiHost(AppContext &ctx,
-                      const std::function<void()> &backgroundTick) {
-  String value = ctx.config.tailscaleRelayApiHost;
-  if (!ctx.ui->textInput("Relay API Host/IP", value, false, backgroundTick)) {
-    return;
-  }
-
-  value.trim();
-  ctx.config.tailscaleRelayApiHost = value;
-  markDirty(ctx);
-  ctx.ui->showToast("Tailscale", "Relay API host updated", 1200, backgroundTick);
-}
-
-void editRelayApiPort(AppContext &ctx,
-                      const std::function<void()> &backgroundTick) {
-  String value = String(ctx.config.tailscaleRelayApiPort);
-  if (!ctx.ui->textInput("Relay API Port", value, false, backgroundTick)) {
-    return;
-  }
-
-  uint16_t parsed = 0;
-  if (!parsePortNumber(value, parsed)) {
-    ctx.ui->showToast("Tailscale", "Port must be 1..65535", 1500, backgroundTick);
-    return;
-  }
-
-  ctx.config.tailscaleRelayApiPort = parsed;
-  markDirty(ctx);
-  ctx.ui->showToast("Tailscale", "Relay API port updated", 1200, backgroundTick);
-}
-
-void editRelayApiBasePath(AppContext &ctx,
-                          const std::function<void()> &backgroundTick) {
-  String value = normalizeApiBasePath(ctx.config.tailscaleRelayApiBasePath);
-  if (!ctx.ui->textInput("Relay API Base Path", value, false, backgroundTick)) {
-    return;
-  }
-
-  ctx.config.tailscaleRelayApiBasePath = normalizeApiBasePath(value);
-  markDirty(ctx);
-  ctx.ui->showToast("Tailscale", "Relay API path updated", 1200, backgroundTick);
-}
-
-void editRelayApiToken(AppContext &ctx,
-                       const std::function<void()> &backgroundTick) {
-  String value = ctx.config.tailscaleRelayApiToken;
-  if (!ctx.ui->textInput("Relay API Token", value, true, backgroundTick)) {
-    return;
-  }
-
-  value.trim();
-  ctx.config.tailscaleRelayApiToken = value;
-  markDirty(ctx);
-  ctx.ui->showToast("Tailscale", "Relay API token updated", 1200, backgroundTick);
-}
-
 }  // namespace
 
 void runTailscaleApp(AppContext &ctx,
                      const std::function<void()> &backgroundTick) {
-  RelayTarget target;
-  if (!parseWsUrl(ctx.config.gatewayUrl, target)) {
-    target.host = "";
-    target.port = 18789;
-    target.path = "/";
-    target.secure = false;
-  }
-
-  if (ctx.config.tailscaleRelayApiPort == 0) {
-    ctx.config.tailscaleRelayApiPort = 9080;
-  }
-  if (ctx.config.tailscaleRelayApiBasePath.isEmpty()) {
-    ctx.config.tailscaleRelayApiBasePath = "/api/tailscale";
-  }
   if (ctx.config.tailscaleLitePeerPort == 0) {
     ctx.config.tailscaleLitePeerPort = 41641;
   }
 
-  String lastProbeResult = "Not run";
-  String lastLoginResult = "Not run";
+  String lastAuthLoadResult = "Not run";
+  String lastLiteSetupResult = "Not run";
   int selected = 0;
 
   while (true) {
     std::vector<String> menu;
     menu.push_back("Status");
-    menu.push_back("Relay Host/IP");
-    menu.push_back("Relay Port");
-    menu.push_back("Relay Path");
-    menu.push_back(String("Scheme: ") + (target.secure ? "wss://" : "ws://"));
-    menu.push_back("Apply URL to OpenClaw");
-    menu.push_back("Probe Relay TCP");
-    menu.push_back("Login Server URL");
     menu.push_back("Auth Key");
-    menu.push_back("Login from SD .env");
+    menu.push_back("Auth Load from SD .env");
+    menu.push_back("Lite Quick Setup from SD .env");
     menu.push_back(String("Lite Enabled: ") +
                    (ctx.config.tailscaleLiteEnabled ? "Yes" : "No"));
-    menu.push_back("Lite Node IP");
-    menu.push_back("Lite Private Key");
-    menu.push_back("Lite Peer Host/IP");
-    menu.push_back("Lite Peer Port");
-    menu.push_back("Lite Peer Public Key");
-    menu.push_back("Lite Load from SD .env");
     menu.push_back("Lite Connect");
     menu.push_back("Lite Disconnect");
-    menu.push_back("Relay API Host/IP");
-    menu.push_back("Relay API Port");
-    menu.push_back("Relay API Base Path");
-    menu.push_back("Relay API Token");
-    menu.push_back("Relay Login");
-    menu.push_back("Relay Logout");
-    menu.push_back("Relay Status");
     menu.push_back("Save & Apply");
     menu.push_back("Connect");
     menu.push_back("Disconnect");
     menu.push_back("Back");
 
-    String subtitle;
-    if (target.host.isEmpty()) {
-      subtitle = "Relay optional (Lite direct)";
-    } else {
-      subtitle = trimMiddle(target.host, 16) + ":" + String(target.port);
-    }
-    subtitle += " / Lite:";
+    String subtitle = "Lite:";
     subtitle += (ctx.tailscaleLite && ctx.tailscaleLite->isConnected())
                     ? "UP"
                     : (ctx.config.tailscaleLiteEnabled ? "CFG" : "OFF");
-    subtitle += " / API:";
-    subtitle += lastLoginResult;
+    subtitle += " / Auth:";
+    subtitle += ctx.config.tailscaleAuthKey.isEmpty() ? "EMPTY" : "SET";
 
     if (ctx.configDirty) {
       subtitle += " *DIRTY";
@@ -1425,157 +783,49 @@ void runTailscaleApp(AppContext &ctx,
                                         "OK Select  BACK Exit",
                                         subtitle);
 
-    if (choice < 0 || choice == 29) {
+    if (choice < 0 || choice == 10) {
       return;
     }
 
     selected = choice;
 
     if (choice == 0) {
-      showTailscaleStatus(ctx, target, lastProbeResult, lastLoginResult, backgroundTick);
+      showTailscaleStatus(ctx, lastAuthLoadResult, lastLiteSetupResult, backgroundTick);
       continue;
     }
-
     if (choice == 1) {
-      editRelayHost(ctx, target, backgroundTick);
-      continue;
-    }
-
-    if (choice == 2) {
-      editRelayPort(ctx, target, backgroundTick);
-      continue;
-    }
-
-    if (choice == 3) {
-      editRelayPath(ctx, target, backgroundTick);
-      continue;
-    }
-
-    if (choice == 4) {
-      target.secure = !target.secure;
-      ctx.ui->showToast("Tailscale",
-                        target.secure ? "Scheme set to wss://" : "Scheme set to ws://",
-                        1300,
-                        backgroundTick);
-      continue;
-    }
-
-    if (choice == 5) {
-      applyRelayUrlToConfig(ctx, target, backgroundTick);
-      continue;
-    }
-
-    if (choice == 6) {
-      probeRelay(ctx, target, lastProbeResult, backgroundTick);
-      continue;
-    }
-
-    if (choice == 7) {
-      editLoginServer(ctx, backgroundTick);
-      continue;
-    }
-
-    if (choice == 8) {
       editAuthKey(ctx, backgroundTick);
       continue;
     }
-
-    if (choice == 9) {
-      runRelayLoginFromEnvFile(ctx, lastLoginResult, backgroundTick);
+    if (choice == 2) {
+      runAuthLoadFromEnvFile(ctx, lastAuthLoadResult, backgroundTick);
       continue;
     }
-
-    if (choice == 10) {
+    if (choice == 3) {
+      runLiteQuickSetupFromEnvFile(ctx, lastLiteSetupResult, backgroundTick);
+      continue;
+    }
+    if (choice == 4) {
       toggleLiteEnabled(ctx, backgroundTick);
       continue;
     }
-
-    if (choice == 11) {
-      editLiteNodeIp(ctx, backgroundTick);
-      continue;
-    }
-
-    if (choice == 12) {
-      editLitePrivateKey(ctx, backgroundTick);
-      continue;
-    }
-
-    if (choice == 13) {
-      editLitePeerHost(ctx, backgroundTick);
-      continue;
-    }
-
-    if (choice == 14) {
-      editLitePeerPort(ctx, backgroundTick);
-      continue;
-    }
-
-    if (choice == 15) {
-      editLitePeerPublicKey(ctx, backgroundTick);
-      continue;
-    }
-
-    if (choice == 16) {
-      runLiteLoadFromEnvFile(ctx, backgroundTick);
-      continue;
-    }
-
-    if (choice == 17) {
+    if (choice == 5) {
       runLiteConnect(ctx, backgroundTick);
       continue;
     }
-
-    if (choice == 18) {
+    if (choice == 6) {
       runLiteDisconnect(ctx, backgroundTick);
       continue;
     }
-
-    if (choice == 19) {
-      editRelayApiHost(ctx, backgroundTick);
-      continue;
-    }
-
-    if (choice == 20) {
-      editRelayApiPort(ctx, backgroundTick);
-      continue;
-    }
-
-    if (choice == 21) {
-      editRelayApiBasePath(ctx, backgroundTick);
-      continue;
-    }
-
-    if (choice == 22) {
-      editRelayApiToken(ctx, backgroundTick);
-      continue;
-    }
-
-    if (choice == 23) {
-      runRelayLogin(ctx, lastLoginResult, backgroundTick);
-      continue;
-    }
-
-    if (choice == 24) {
-      runRelayLogout(ctx, lastLoginResult, backgroundTick);
-      continue;
-    }
-
-    if (choice == 25) {
-      runRelayStatus(ctx, lastLoginResult, backgroundTick);
-      continue;
-    }
-
-    if (choice == 26) {
+    if (choice == 7) {
       saveAndApply(ctx, backgroundTick);
       continue;
     }
-
-    if (choice == 27) {
+    if (choice == 8) {
       requestGatewayConnect(ctx, backgroundTick);
       continue;
     }
-
-    if (choice == 28) {
+    if (choice == 9) {
       ctx.gateway->disconnectNow();
       ctx.ui->showToast("Tailscale", "Disconnected", 1200, backgroundTick);
       continue;

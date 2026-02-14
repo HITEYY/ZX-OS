@@ -21,10 +21,6 @@ struct RuntimeConfig {
   bool bleAutoConnect = false;
   String tailscaleLoginServer;
   String tailscaleAuthKey;
-  String tailscaleRelayApiHost;
-  uint16_t tailscaleRelayApiPort = 9080;
-  String tailscaleRelayApiBasePath;
-  String tailscaleRelayApiToken;
   String appMarketGithubRepo;
   String appMarketReleaseAsset;
   bool tailscaleLiteEnabled = false;
