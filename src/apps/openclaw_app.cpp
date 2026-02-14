@@ -21,107 +21,6 @@ void markDirty(AppContext &ctx) {
   ctx.configDirty = true;
 }
 
-void editHiddenWifi(AppContext &ctx,
-                    const std::function<void()> &backgroundTick) {
-  String ssid = ctx.config.wifiSsid;
-  String password = ctx.config.wifiPassword;
-
-  if (!ctx.ui->textInput("Wi-Fi SSID", ssid, false, backgroundTick)) {
-    return;
-  }
-  if (!ctx.ui->textInput("Wi-Fi Password", password, true, backgroundTick)) {
-    return;
-  }
-
-  ctx.config.wifiSsid = ssid;
-  ctx.config.wifiPassword = password;
-  markDirty(ctx);
-  ctx.ui->showToast("Wi-Fi", "Credentials updated", 1200, backgroundTick);
-}
-
-void scanAndSelectWifi(AppContext &ctx,
-                       const std::function<void()> &backgroundTick) {
-  std::vector<String> ssids;
-  String err;
-  if (!ctx.wifi->scanNetworks(ssids, &err)) {
-    String message = err.isEmpty() ? String("Wi-Fi scan failed") : err;
-    message += " / use Hidden SSID";
-    ctx.ui->showToast("Wi-Fi Scan", message, 1800, backgroundTick);
-    return;
-  }
-
-  std::vector<String> menu = ssids;
-  menu.push_back("Hidden SSID");
-  menu.push_back("Back");
-
-  int selected = 0;
-  const int choice = ctx.ui->menuLoop("Wi-Fi Scan",
-                                       menu,
-                                       selected,
-                                       backgroundTick,
-                                       "OK Select  BACK Exit",
-                                       "Pick SSID");
-
-  if (choice < 0 || choice == static_cast<int>(menu.size()) - 1) {
-    return;
-  }
-
-  if (menu[static_cast<size_t>(choice)] == "Hidden SSID") {
-    editHiddenWifi(ctx, backgroundTick);
-    return;
-  }
-
-  const String selectedSsid = menu[static_cast<size_t>(choice)];
-  String password = ctx.config.wifiPassword;
-  if (!ctx.ui->textInput("Wi-Fi Password", password, true, backgroundTick)) {
-    return;
-  }
-
-  ctx.config.wifiSsid = selectedSsid;
-  ctx.config.wifiPassword = password;
-  markDirty(ctx);
-  ctx.ui->showToast("Wi-Fi", "Credentials updated", 1200, backgroundTick);
-}
-
-void runWifiMenu(AppContext &ctx,
-                 const std::function<void()> &backgroundTick) {
-  int selected = 0;
-
-  while (true) {
-    std::vector<String> menu;
-    menu.push_back("Scan Networks");
-    menu.push_back("Hidden SSID");
-    menu.push_back("Clear Wi-Fi");
-    menu.push_back("Back");
-
-    const String subtitle = ctx.config.wifiSsid.isEmpty()
-                                ? String("SSID: (empty)")
-                                : String("SSID: ") + ctx.config.wifiSsid;
-
-    const int choice = ctx.ui->menuLoop("OpenClaw / Wi-Fi",
-                                        menu,
-                                        selected,
-                                        backgroundTick,
-                                        "OK Select  BACK Exit",
-                                        subtitle);
-    if (choice < 0 || choice == 3) {
-      return;
-    }
-    selected = choice;
-
-    if (choice == 0) {
-      scanAndSelectWifi(ctx, backgroundTick);
-    } else if (choice == 1) {
-      editHiddenWifi(ctx, backgroundTick);
-    } else if (choice == 2) {
-      ctx.config.wifiSsid = "";
-      ctx.config.wifiPassword = "";
-      markDirty(ctx);
-      ctx.ui->showToast("Wi-Fi", "Wi-Fi config cleared", 1200, backgroundTick);
-    }
-  }
-}
-
 void runGatewayMenu(AppContext &ctx,
                     const std::function<void()> &backgroundTick) {
   int selected = 0;
@@ -310,7 +209,6 @@ void runOpenClawApp(AppContext &ctx,
 
     std::vector<String> menu;
     menu.push_back("Status");
-    menu.push_back("Wi-Fi");
     menu.push_back("Gateway");
     menu.push_back("Save & Apply");
     menu.push_back("Connect");
@@ -325,7 +223,7 @@ void runOpenClawApp(AppContext &ctx,
                                         "OK Select  BACK Exit",
                                         subtitle);
 
-    if (choice < 0 || choice == 7) {
+    if (choice < 0 || choice == 6) {
       return;
     }
 
@@ -340,21 +238,16 @@ void runOpenClawApp(AppContext &ctx,
     }
 
     if (choice == 1) {
-      runWifiMenu(ctx, backgroundTick);
-      continue;
-    }
-
-    if (choice == 2) {
       runGatewayMenu(ctx, backgroundTick);
       continue;
     }
 
-    if (choice == 3) {
+    if (choice == 2) {
       applyRuntimeConfig(ctx, backgroundTick);
       continue;
     }
 
-    if (choice == 4) {
+    if (choice == 3) {
       String validateErr;
       if (!validateConfig(ctx.config, &validateErr)) {
         ctx.ui->showToast("Config Error", validateErr, 1800, backgroundTick);
@@ -373,13 +266,13 @@ void runOpenClawApp(AppContext &ctx,
       continue;
     }
 
-    if (choice == 5) {
+    if (choice == 4) {
       ctx.gateway->disconnectNow();
       ctx.ui->showToast("OpenClaw", "Disconnected", 1200, backgroundTick);
       continue;
     }
 
-    if (choice == 6) {
+    if (choice == 5) {
       String validateErr;
       if (!validateConfig(ctx.config, &validateErr)) {
         ctx.ui->showToast("Config Error", validateErr, 1800, backgroundTick);

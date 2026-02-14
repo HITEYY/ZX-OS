@@ -500,137 +500,228 @@ bool UIShell::textInput(const String &title,
                         String &inOutValue,
                         bool mask,
                         const std::function<void()> &backgroundTick) {
-  static const char kQwertyKeyset[4][12][2] = {
-      {{'1', '!'},
-       {'2', '@'},
-       {'3', '#'},
-       {'4', '$'},
-       {'5', '%'},
-       {'6', '^'},
-       {'7', '&'},
-       {'8', '*'},
-       {'9', '('},
-       {'0', ')'},
-       {'-', '_'},
-       {'=', '+'}},
-      {{'q', 'Q'},
-       {'w', 'W'},
-       {'e', 'E'},
-       {'r', 'R'},
-       {'t', 'T'},
-       {'y', 'Y'},
-       {'u', 'U'},
-       {'i', 'I'},
-       {'o', 'O'},
-       {'p', 'P'},
-       {'[', '{'},
-       {']', '}'}},
-      {{'a', 'A'},
-       {'s', 'S'},
-       {'d', 'D'},
-       {'f', 'F'},
-       {'g', 'G'},
-       {'h', 'H'},
-       {'j', 'J'},
-       {'k', 'K'},
-       {'l', 'L'},
-       {';', ':'},
-       {'\"', '\''},
-       {'|', '\\'}},
-      {{'\\', '|'},
-       {'z', 'Z'},
-       {'x', 'X'},
-       {'c', 'C'},
-       {'v', 'V'},
-       {'b', 'B'},
-       {'n', 'N'},
-       {'m', 'M'},
-       {',', '<'},
-       {'.', '>'},
-       {'?', '/'},
-       {'/', '/'}}};
+  struct CharKeyPair {
+    char normal;
+    char shifted;
+  };
+
+  enum class KeyAction : uint8_t {
+    Character,
+    Done,
+    Caps,
+    Del,
+    Space,
+    Cancel,
+  };
+
+  struct KeySlot {
+    KeyAction action = KeyAction::Character;
+    char normal = 0;
+    char shifted = 0;
+    const char *label = "";
+    int x = 0;
+    int y = 0;
+    int w = 0;
+    int h = 0;
+  };
+
+  static const CharKeyPair kRow0[] = {
+      {'1', '!'}, {'2', '@'}, {'3', '#'}, {'4', '$'}, {'5', '%'}, {'6', '^'},
+      {'7', '&'}, {'8', '*'}, {'9', '('}, {'0', ')'}, {'-', '_'}, {'=', '+'}};
+  static const CharKeyPair kRow1[] = {
+      {'q', 'Q'}, {'w', 'W'}, {'e', 'E'}, {'r', 'R'}, {'t', 'T'}, {'y', 'Y'},
+      {'u', 'U'}, {'i', 'I'}, {'o', 'O'}, {'p', 'P'}, {'[', '{'}, {']', '}'}};
+  static const CharKeyPair kRow2[] = {
+      {'a', 'A'}, {'s', 'S'}, {'d', 'D'}, {'f', 'F'}, {'g', 'G'}, {'h', 'H'},
+      {'j', 'J'}, {'k', 'K'}, {'l', 'L'}, {';', ':'}, {'\'', '"'}, {'\\', '|'}};
+  static const CharKeyPair kRow3[] = {
+      {'z', 'Z'}, {'x', 'X'}, {'c', 'C'}, {'v', 'V'}, {'b', 'B'},
+      {'n', 'N'}, {'m', 'M'}, {',', '<'}, {'.', '>'}, {'/', '?'}};
 
   String working = inOutValue;
-  size_t rowIndex = 0;
-  int selected = 0;
   bool caps = false;
+  int selected = 0;
   bool redraw = true;
   unsigned long lastRefreshMs = millis();
 
-  while (true) {
-    const int rowCharCount = 12;
-    const int entryCount = rowCharCount + 5;
+  const int keyWidth = 24;
+  const int keyHeight = 18;
+  const int keyGap = 2;
+  const int keyboardTop = kHeaderHeight + kRowHeight + 4;
 
-    selected = wrapIndex(selected, entryCount);
+  std::vector<KeySlot> keys;
+  keys.reserve(64);
 
-    String preview = "[row ";
-    preview += String(static_cast<int>(rowIndex + 1));
-    preview += "/4] ";
-    preview += maskIfNeeded(working, mask);
+  auto addCharRow = [&](const CharKeyPair *row, size_t len, int y) {
+    const int rowWidth = static_cast<int>(len) * keyWidth +
+                         (static_cast<int>(len) - 1) * keyGap;
+    int x = (impl_->tft.width() - rowWidth) / 2;
 
-    const unsigned long now = millis();
-    if (redraw) {
-      std::vector<String> entries;
-      entries.reserve(static_cast<size_t>(entryCount));
-      for (int i = 0; i < rowCharCount; ++i) {
-        const char c = kQwertyKeyset[rowIndex][static_cast<size_t>(i)][caps ? 1 : 0];
-        entries.push_back(String(c));
+    for (size_t i = 0; i < len; ++i) {
+      KeySlot slot;
+      slot.action = KeyAction::Character;
+      slot.normal = row[i].normal;
+      slot.shifted = row[i].shifted;
+      slot.x = x;
+      slot.y = y;
+      slot.w = keyWidth;
+      slot.h = keyHeight;
+      keys.push_back(slot);
+      x += keyWidth + keyGap;
+    }
+  };
+
+  addCharRow(kRow0, sizeof(kRow0) / sizeof(kRow0[0]), keyboardTop);
+  addCharRow(kRow1,
+             sizeof(kRow1) / sizeof(kRow1[0]),
+             keyboardTop + (keyHeight + keyGap) * 1);
+  addCharRow(kRow2,
+             sizeof(kRow2) / sizeof(kRow2[0]),
+             keyboardTop + (keyHeight + keyGap) * 2);
+  addCharRow(kRow3,
+             sizeof(kRow3) / sizeof(kRow3[0]),
+             keyboardTop + (keyHeight + keyGap) * 3);
+
+  const int actionRowY = keyboardTop + (keyHeight + keyGap) * 4;
+  static const int kActionWidths[5] = {56, 56, 48, 88, 56};
+  static const KeyAction kActionKinds[5] = {
+      KeyAction::Done,
+      KeyAction::Caps,
+      KeyAction::Del,
+      KeyAction::Space,
+      KeyAction::Cancel};
+  static const char *kActionLabels[5] = {
+      "DONE",
+      "CAPS",
+      "DEL",
+      "SPACE",
+      "CANCEL"};
+
+  int actionX = 4;
+  for (int i = 0; i < 5; ++i) {
+    KeySlot slot;
+    slot.action = kActionKinds[i];
+    slot.label = kActionLabels[i];
+    slot.x = actionX;
+    slot.y = actionRowY;
+    slot.w = kActionWidths[i];
+    slot.h = keyHeight;
+    keys.push_back(slot);
+    actionX += kActionWidths[i] + keyGap;
+  }
+
+  auto buildPreview = [&]() -> String {
+    String preview = maskIfNeeded(working, mask);
+    if (preview.isEmpty()) {
+      preview = "(empty)";
+    }
+
+    constexpr size_t kMaxPreviewChars = 40;
+    if (preview.length() > kMaxPreviewChars) {
+      const size_t tail = kMaxPreviewChars - 3;
+      preview = "..." + preview.substring(preview.length() - tail);
+    }
+    return preview;
+  };
+
+  auto labelForKey = [&](const KeySlot &slot) -> String {
+    if (slot.action == KeyAction::Character) {
+      return String(caps ? slot.shifted : slot.normal);
+    }
+    if (slot.action == KeyAction::Caps) {
+      return caps ? "CAPS ON" : "CAPS";
+    }
+    return String(slot.label);
+  };
+
+  auto drawKeyboard = [&]() {
+    const String subtitle = buildPreview();
+    impl_->drawHeader(title, subtitle);
+
+    const int contentTop = kHeaderHeight + kRowHeight + 2;
+    const int contentBottom = impl_->tft.height() - kFooterHeight - 2;
+    if (contentBottom >= contentTop) {
+      impl_->tft.fillRect(0,
+                          contentTop,
+                          impl_->tft.width(),
+                          contentBottom - contentTop + 1,
+                          TFT_BLACK);
+    }
+
+    for (size_t i = 0; i < keys.size(); ++i) {
+      const KeySlot &slot = keys[i];
+      const bool isSelected = selected == static_cast<int>(i);
+
+      uint16_t bg = TFT_DARKGREY;
+      uint16_t fg = TFT_WHITE;
+      if (slot.action == KeyAction::Caps && caps) {
+        bg = TFT_CYAN;
+        fg = TFT_BLACK;
+      }
+      if (isSelected) {
+        bg = TFT_YELLOW;
+        fg = TFT_BLACK;
       }
 
-      entries.push_back("DONE");
-      entries.push_back(caps ? "CAPS:ON" : "CAPS:OFF");
-      entries.push_back("DEL");
-      entries.push_back("SPACE");
-      entries.push_back("CANCEL");
+      impl_->tft.fillRect(slot.x, slot.y, slot.w, slot.h, bg);
+      impl_->tft.drawRect(slot.x, slot.y, slot.w, slot.h, TFT_BLACK);
 
-      impl_->drawMenu(title,
-                      entries,
-                      selected,
-                      preview,
-                      "BACK: Row  OK:Select");
-      lastRefreshMs = now;
+      const String label = labelForKey(slot);
+      const int textWidth = impl_->tft.textWidth(label);
+      int textX = slot.x + (slot.w - textWidth) / 2;
+      if (textX < slot.x + 2) {
+        textX = slot.x + 2;
+      }
+      const int textY = slot.y + ((slot.h - 8) / 2);
+
+      impl_->tft.setTextColor(fg, bg);
+      impl_->tft.setCursor(textX, textY);
+      impl_->tft.print(label);
+    }
+
+    impl_->drawFooter("ROT Move  OK Key  BACK Cancel");
+  };
+
+  while (true) {
+    const unsigned long now = millis();
+    if (redraw || now - lastRefreshMs >= kHeaderRefreshMs) {
+      drawKeyboard();
       redraw = false;
-    } else if (now - lastRefreshMs >= kHeaderRefreshMs) {
-      impl_->drawHeader(title, preview);
-      impl_->drawFooter("BACK: Row  OK:Select");
       lastRefreshMs = now;
     }
 
     UiEvent ev = pollInput();
     if (ev.delta != 0) {
       selected = wrapIndex(selected + (ev.delta > 0 ? 1 : -1),
-                           entryCount);
+                           static_cast<int>(keys.size()));
       redraw = true;
     }
 
     if (ev.back) {
-      rowIndex = (rowIndex + 1) % 4;
-      selected = 0;
-      redraw = true;
-    } else if (ev.ok) {
-      if (selected < rowCharCount) {
-        const char c = kQwertyKeyset[rowIndex][static_cast<size_t>(selected)][caps ? 1 : 0];
-        working += c;
+      return false;
+    }
+
+    if (ev.ok) {
+      const KeySlot &slot = keys[static_cast<size_t>(selected)];
+      if (slot.action == KeyAction::Character) {
+        working += caps ? slot.shifted : slot.normal;
         redraw = true;
-      } else {
-        const int action = selected - rowCharCount;
-        if (action == 0) {  // DONE
-          inOutValue = working;
-          return true;
-        } else if (action == 1) {  // CAPS
-          caps = !caps;
-          redraw = true;
-        } else if (action == 2) {  // DEL
-          if (working.length() > 0) {
-            working.remove(working.length() - 1);
-          }
-          redraw = true;
-        } else if (action == 3) {  // SPACE
-          working += " ";
-          redraw = true;
-        } else if (action == 4) {  // CANCEL
-          return false;
+      } else if (slot.action == KeyAction::Done) {
+        inOutValue = working;
+        return true;
+      } else if (slot.action == KeyAction::Caps) {
+        caps = !caps;
+        redraw = true;
+      } else if (slot.action == KeyAction::Del) {
+        if (working.length() > 0) {
+          working.remove(working.length() - 1);
         }
+        redraw = true;
+      } else if (slot.action == KeyAction::Space) {
+        working += " ";
+        redraw = true;
+      } else if (slot.action == KeyAction::Cancel) {
+        return false;
       }
     }
 

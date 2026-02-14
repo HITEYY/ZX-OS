@@ -14,6 +14,107 @@ void markDirty(AppContext &ctx) {
   ctx.configDirty = true;
 }
 
+void editHiddenWifi(AppContext &ctx,
+                    const std::function<void()> &backgroundTick) {
+  String ssid = ctx.config.wifiSsid;
+  String password = ctx.config.wifiPassword;
+
+  if (!ctx.ui->textInput("Wi-Fi SSID", ssid, false, backgroundTick)) {
+    return;
+  }
+  if (!ctx.ui->textInput("Wi-Fi Password", password, true, backgroundTick)) {
+    return;
+  }
+
+  ctx.config.wifiSsid = ssid;
+  ctx.config.wifiPassword = password;
+  markDirty(ctx);
+  ctx.ui->showToast("Wi-Fi", "Credentials updated", 1200, backgroundTick);
+}
+
+void scanAndSelectWifi(AppContext &ctx,
+                       const std::function<void()> &backgroundTick) {
+  std::vector<String> ssids;
+  String err;
+  if (!ctx.wifi->scanNetworks(ssids, &err)) {
+    String message = err.isEmpty() ? String("Wi-Fi scan failed") : err;
+    message += " / use Hidden SSID";
+    ctx.ui->showToast("Wi-Fi Scan", message, 1800, backgroundTick);
+    return;
+  }
+
+  std::vector<String> menu = ssids;
+  menu.push_back("Hidden SSID");
+  menu.push_back("Back");
+
+  int selected = 0;
+  const int choice = ctx.ui->menuLoop("Wi-Fi Scan",
+                                       menu,
+                                       selected,
+                                       backgroundTick,
+                                       "OK Select  BACK Exit",
+                                       "Pick SSID");
+
+  if (choice < 0 || choice == static_cast<int>(menu.size()) - 1) {
+    return;
+  }
+
+  if (menu[static_cast<size_t>(choice)] == "Hidden SSID") {
+    editHiddenWifi(ctx, backgroundTick);
+    return;
+  }
+
+  const String selectedSsid = menu[static_cast<size_t>(choice)];
+  String password = ctx.config.wifiPassword;
+  if (!ctx.ui->textInput("Wi-Fi Password", password, true, backgroundTick)) {
+    return;
+  }
+
+  ctx.config.wifiSsid = selectedSsid;
+  ctx.config.wifiPassword = password;
+  markDirty(ctx);
+  ctx.ui->showToast("Wi-Fi", "Credentials updated", 1200, backgroundTick);
+}
+
+void runWifiMenu(AppContext &ctx,
+                 const std::function<void()> &backgroundTick) {
+  int selected = 0;
+
+  while (true) {
+    std::vector<String> menu;
+    menu.push_back("Scan Networks");
+    menu.push_back("Hidden SSID");
+    menu.push_back("Clear Wi-Fi");
+    menu.push_back("Back");
+
+    const String subtitle = ctx.config.wifiSsid.isEmpty()
+                                ? String("SSID: (empty)")
+                                : String("SSID: ") + ctx.config.wifiSsid;
+
+    const int choice = ctx.ui->menuLoop("Setting / Wi-Fi",
+                                        menu,
+                                        selected,
+                                        backgroundTick,
+                                        "OK Select  BACK Exit",
+                                        subtitle);
+    if (choice < 0 || choice == 3) {
+      return;
+    }
+    selected = choice;
+
+    if (choice == 0) {
+      scanAndSelectWifi(ctx, backgroundTick);
+    } else if (choice == 1) {
+      editHiddenWifi(ctx, backgroundTick);
+    } else if (choice == 2) {
+      ctx.config.wifiSsid = "";
+      ctx.config.wifiPassword = "";
+      markDirty(ctx);
+      ctx.ui->showToast("Wi-Fi", "Wi-Fi config cleared", 1200, backgroundTick);
+    }
+  }
+}
+
 String buildBleSubtitle(const AppContext &ctx) {
   const BleStatus bs = ctx.ble->status();
   String subtitle = bs.connected ? "Connected" : "Disconnected";
@@ -254,6 +355,7 @@ void runSettingsApp(AppContext &ctx,
 
   while (true) {
     std::vector<String> menu;
+    menu.push_back("Wi-Fi");
     menu.push_back("BLE");
     menu.push_back("System");
     menu.push_back("Back");
@@ -266,15 +368,17 @@ void runSettingsApp(AppContext &ctx,
                                         "OK Select  BACK Exit",
                                         subtitle);
 
-    if (choice < 0 || choice == 2) {
+    if (choice < 0 || choice == 3) {
       return;
     }
 
     selected = choice;
 
     if (choice == 0) {
-      runBleMenu(ctx, backgroundTick);
+      runWifiMenu(ctx, backgroundTick);
     } else if (choice == 1) {
+      runBleMenu(ctx, backgroundTick);
+    } else if (choice == 2) {
       runSystemMenu(ctx, backgroundTick);
     }
   }

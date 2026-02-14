@@ -4,8 +4,10 @@ LilyGo T-Embed CC1101 보드를 OpenClaw Remote Gateway에 `node`로 연결하�
 
 이 버전은 런타임 앱 구조를 사용합니다.
 
-- `OpenClaw` 앱: 상태 확인 + Wi-Fi/Gateway 설정 + Save & Apply + Connect/Disconnect/Reconnect
-- `Setting` 앱: BLE 스캔/연결/저장(재접속 대상) + System(Factory Reset)
+- `OpenClaw` 앱: 상태 확인 + Gateway 설정 + Save & Apply + Connect/Disconnect/Reconnect
+- `Setting` 앱: Wi-Fi 설정 + BLE 스캔/연결/저장(재접속 대상) + System(Factory Reset)
+- `File Explorer` 앱: SD 카드 마운트/용량 확인/디렉토리 탐색/텍스트 미리보기
+- `Tailscale` 앱: Relay(host/port/path/ws/wss) 설정 + TCP 프로브 + OpenClaw URL 반영
 
 ## 핵심 기능
 
@@ -18,8 +20,8 @@ LilyGo T-Embed CC1101 보드를 OpenClaw Remote Gateway에 `node`로 연결하�
   - `cc1101.tx`
 - 설정 영구 저장(NVS, namespace: `oc_cfg`)
 - Bruce 스타일 QWERTY 입력(온디바이스 키보드)
-  - 4-row keyset + `DONE/CAPS/DEL/SPACE/CANCEL`
-  - Back 버튼으로 row 전환
+  - 전체 QWERTY 키보드 동시 표시 + `DONE/CAPS/DEL/SPACE/CANCEL`
+  - ROT로 키 이동, OK로 입력, BACK으로 취소
 - BLE 장치 스캔/연결
   - 저장 필드: `bleDeviceName`, `bleDeviceAddress`, `bleAutoConnect`
 
@@ -34,6 +36,8 @@ LilyGo T-Embed CC1101 보드를 OpenClaw Remote Gateway에 `node`로 연결하�
 - `src/ui/ui_shell.*`: TFT/엔코더 UI 공통
 - `src/apps/openclaw_app.*`: OpenClaw 앱
 - `src/apps/settings_app.*`: Setting 앱
+- `src/apps/file_explorer_app.*`: File Explorer 앱
+- `src/apps/tailscale_app.*`: Tailscale 앱
 - `src/main.cpp`: 부트스트랩 + 런처 오케스트레이션
 
 ## 빌드/업로드
@@ -53,7 +57,7 @@ pio device monitor -b 115200
 
 ## 앱 설정 흐름
 
-1. `OpenClaw -> Wi-Fi`
+1. `Setting -> Wi-Fi`
 - `Scan Networks`로 SSID 선택 + 비밀번호 입력
 - `Hidden SSID`로 수동 SSID/비밀번호 입력
 
@@ -112,7 +116,7 @@ T-Embed(ESP32) --ws://LAN_RELAY_IP:18789--> Relay 노드 --Tailscale--> OpenClaw
 
 ### 3) 디바이스 설정
 
-1. `OpenClaw -> Wi-Fi`에서 디바이스를 Relay와 같은 LAN에 연결
+1. `Setting -> Wi-Fi`에서 디바이스를 Relay와 같은 LAN에 연결
 2. `OpenClaw -> Gateway`에서:
    - URL: `ws://<relay_lan_ip>:18789`
    - Auth Mode / Credential: OpenClaw Gateway와 동일하게 설정

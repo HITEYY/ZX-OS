@@ -9,8 +9,10 @@
 #include <vector>
 
 #include "apps/app_context.h"
+#include "apps/file_explorer_app.h"
 #include "apps/openclaw_app.h"
 #include "apps/settings_app.h"
+#include "apps/tailscale_app.h"
 #include "core/cc1101_radio.h"
 #include "core/ble_manager.h"
 #include "core/board_pins.h"
@@ -93,6 +95,8 @@ void runLauncher() {
   std::vector<String> items;
   items.push_back("OpenClaw");
   items.push_back("Setting");
+  items.push_back("File Explorer");
+  items.push_back("Tailscale");
 
   gUi.setStatusLine(buildLauncherStatus());
   const int choice = gUi.menuLoop("Launcher",
@@ -110,6 +114,10 @@ void runLauncher() {
     runOpenClawApp(gAppContext, runBackgroundTick);
   } else if (choice == 1) {
     runSettingsApp(gAppContext, runBackgroundTick);
+  } else if (choice == 2) {
+    runFileExplorerApp(gAppContext, runBackgroundTick);
+  } else if (choice == 3) {
+    runTailscaleApp(gAppContext, runBackgroundTick);
   }
 }
 
