@@ -28,11 +28,19 @@ struct EnvGatewayOverrides {
   bool hasGatewayToken = false;
   bool hasGatewayPassword = false;
   bool hasGatewayAuthMode = false;
+  bool hasGatewayDeviceId = false;
+  bool hasGatewayDevicePublicKey = false;
+  bool hasGatewayDevicePrivateKey = false;
+  bool hasGatewayDeviceToken = false;
 
   String gatewayUrl;
   String gatewayToken;
   String gatewayPassword;
   GatewayAuthMode gatewayAuthMode = GatewayAuthMode::Token;
+  String gatewayDeviceId;
+  String gatewayDevicePublicKey;
+  String gatewayDevicePrivateKey;
+  String gatewayDeviceToken;
 };
 
 bool isPlaceholder(const char *value) {
@@ -109,6 +117,26 @@ bool applyEnvGatewayKey(const String &key,
       overrides.hasGatewayAuthMode = true;
       overrides.gatewayAuthMode = mode;
     }
+    return true;
+  }
+  if (key == "OPENCLAW_GATEWAY_DEVICE_ID" || key == "GATEWAY_DEVICE_ID") {
+    overrides.hasGatewayDeviceId = true;
+    overrides.gatewayDeviceId = value;
+    return true;
+  }
+  if (key == "OPENCLAW_GATEWAY_DEVICE_PUBLIC_KEY" || key == "GATEWAY_DEVICE_PUBLIC_KEY") {
+    overrides.hasGatewayDevicePublicKey = true;
+    overrides.gatewayDevicePublicKey = value;
+    return true;
+  }
+  if (key == "OPENCLAW_GATEWAY_DEVICE_PRIVATE_KEY" || key == "GATEWAY_DEVICE_PRIVATE_KEY") {
+    overrides.hasGatewayDevicePrivateKey = true;
+    overrides.gatewayDevicePrivateKey = value;
+    return true;
+  }
+  if (key == "OPENCLAW_GATEWAY_DEVICE_TOKEN" || key == "GATEWAY_DEVICE_TOKEN") {
+    overrides.hasGatewayDeviceToken = true;
+    overrides.gatewayDeviceToken = value;
     return true;
   }
   return false;
@@ -200,6 +228,18 @@ void applyEnvGatewayOverrides(RuntimeConfig &config,
   }
   if (overrides.hasGatewayPassword) {
     config.gatewayPassword = overrides.gatewayPassword;
+  }
+  if (overrides.hasGatewayDeviceId) {
+    config.gatewayDeviceId = overrides.gatewayDeviceId;
+  }
+  if (overrides.hasGatewayDevicePublicKey) {
+    config.gatewayDevicePublicKey = overrides.gatewayDevicePublicKey;
+  }
+  if (overrides.hasGatewayDevicePrivateKey) {
+    config.gatewayDevicePrivateKey = overrides.gatewayDevicePrivateKey;
+  }
+  if (overrides.hasGatewayDeviceToken) {
+    config.gatewayDeviceToken = overrides.gatewayDeviceToken;
   }
 
   if (overrides.hasGatewayAuthMode) {
@@ -455,6 +495,10 @@ void toJson(const RuntimeConfig &config, JsonObject obj) {
   obj["gatewayAuthMode"] = static_cast<uint8_t>(config.gatewayAuthMode);
   obj["gatewayToken"] = config.gatewayToken;
   obj["gatewayPassword"] = config.gatewayPassword;
+  obj["gatewayDeviceId"] = config.gatewayDeviceId;
+  obj["gatewayDevicePublicKey"] = config.gatewayDevicePublicKey;
+  obj["gatewayDevicePrivateKey"] = config.gatewayDevicePrivateKey;
+  obj["gatewayDeviceToken"] = config.gatewayDeviceToken;
   obj["autoConnect"] = config.autoConnect;
   obj["bleDeviceName"] = config.bleDeviceName;
   obj["bleDeviceAddress"] = config.bleDeviceAddress;
@@ -471,6 +515,14 @@ void fromJson(const JsonObjectConst &obj, RuntimeConfig &config) {
   config.gatewayAuthMode = sanitizeAuthMode(obj["gatewayAuthMode"] | 0);
   config.gatewayToken = String(static_cast<const char *>(obj["gatewayToken"] | ""));
   config.gatewayPassword = String(static_cast<const char *>(obj["gatewayPassword"] | ""));
+  config.gatewayDeviceId =
+      String(static_cast<const char *>(obj["gatewayDeviceId"] | ""));
+  config.gatewayDevicePublicKey =
+      String(static_cast<const char *>(obj["gatewayDevicePublicKey"] | ""));
+  config.gatewayDevicePrivateKey =
+      String(static_cast<const char *>(obj["gatewayDevicePrivateKey"] | ""));
+  config.gatewayDeviceToken =
+      String(static_cast<const char *>(obj["gatewayDeviceToken"] | ""));
   config.autoConnect = obj["autoConnect"] | false;
   config.bleDeviceName = String(static_cast<const char *>(obj["bleDeviceName"] | ""));
   config.bleDeviceAddress = String(static_cast<const char *>(obj["bleDeviceAddress"] | ""));
@@ -524,6 +576,9 @@ RuntimeConfig makeDefaultConfig() {
 }
 
 bool hasGatewayCredentials(const RuntimeConfig &config) {
+  if (!config.gatewayDeviceToken.isEmpty()) {
+    return true;
+  }
   if (config.gatewayAuthMode == GatewayAuthMode::Token) {
     return config.gatewayToken.length() > 0;
   }

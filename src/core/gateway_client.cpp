@@ -1,6 +1,11 @@
 #include "gateway_client.h"
 
+#include <Ed25519.h>
+#include <SHA256.h>
 #include <WiFi.h>
+#include <esp_system.h>
+#include <mbedtls/base64.h>
+#include <time.h>
 
 #include "user_config.h"
 
@@ -8,9 +13,16 @@ namespace {
 
 constexpr const char *OPENCLAW_CLIENT_ID = "node-host";
 constexpr const char *OPENCLAW_CLIENT_MODE = "node";
-constexpr int OPENCLAW_PROTOCOL_VERSION = 1;
+constexpr const char *OPENCLAW_CLIENT_VERSION = "0.3.0";
+constexpr int OPENCLAW_PROTOCOL_MIN = 1;
+constexpr int OPENCLAW_PROTOCOL_MAX = 3;
 
 constexpr unsigned long kReconnectRetryMs = 2000UL;
+constexpr unsigned long kConnectDelayMs = 750UL;
+
+constexpr size_t kDevicePrivateKeyLen = 32;
+constexpr size_t kDevicePublicKeyLen = 32;
+constexpr size_t kDeviceSignatureLen = 64;
 
 }  // namespace
 
@@ -51,6 +63,12 @@ void GatewayClient::disconnectNow() {
   gatewayReady_ = false;
   wsConnected_ = false;
   connectRequestId_ = "";
+  connectNonce_ = "";
+  connectChallengeTsMs_ = 0;
+  connectQueuedAtMs_ = 0;
+  connectSent_ = false;
+  connectUsedDeviceToken_ = false;
+  connectCanFallbackToShared_ = false;
 
   if (wsStarted_) {
     ws_.disconnect();
@@ -77,6 +95,13 @@ void GatewayClient::tick() {
     const unsigned long now = millis();
     if (now - lastConnectAttemptMs_ >= kReconnectRetryMs) {
       startWebSocket();
+    }
+  }
+
+  if (wsConnected_ && !connectSent_) {
+    const unsigned long now = millis();
+    if (now - connectQueuedAtMs_ >= kConnectDelayMs) {
+      sendConnectRequest();
     }
   }
 
@@ -149,6 +174,12 @@ void GatewayClient::onWsEvent(WStype_t type, uint8_t *payload, size_t length) {
       wsConnected_ = false;
       gatewayReady_ = false;
       connectRequestId_ = "";
+      connectNonce_ = "";
+      connectChallengeTsMs_ = 0;
+      connectQueuedAtMs_ = 0;
+      connectSent_ = false;
+      connectUsedDeviceToken_ = false;
+      connectCanFallbackToShared_ = false;
       wsStarted_ = false;
       if (shouldConnect_ && !lastError_.length()) {
         lastError_ = "Gateway disconnected";
@@ -159,7 +190,13 @@ void GatewayClient::onWsEvent(WStype_t type, uint8_t *payload, size_t length) {
       wsConnected_ = true;
       gatewayReady_ = false;
       lastError_ = "";
-      sendConnectRequest();
+      connectRequestId_ = "";
+      connectNonce_ = "";
+      connectChallengeTsMs_ = 0;
+      connectQueuedAtMs_ = millis();
+      connectSent_ = false;
+      connectUsedDeviceToken_ = false;
+      connectCanFallbackToShared_ = false;
       break;
 
     case WStype_TEXT:
@@ -188,12 +225,12 @@ void GatewayClient::startWebSocket() {
     return;
   }
 
-  const bool wasStarted = wsStarted_;
-  if (wasStarted) {
+  if (wsStarted_) {
     ws_.disconnect();
   }
 
   if (endpoint.secure) {
+    // Empty fingerprint intentionally keeps compatibility with self-managed gateways.
     ws_.beginSSL(endpoint.host.c_str(), endpoint.port, endpoint.path.c_str(), "");
   } else {
     ws_.begin(endpoint.host.c_str(), endpoint.port, endpoint.path.c_str());
@@ -203,6 +240,12 @@ void GatewayClient::startWebSocket() {
   wsConnected_ = false;
   gatewayReady_ = false;
   connectRequestId_ = "";
+  connectNonce_ = "";
+  connectChallengeTsMs_ = 0;
+  connectQueuedAtMs_ = 0;
+  connectSent_ = false;
+  connectUsedDeviceToken_ = false;
+  connectCanFallbackToShared_ = false;
   lastConnectAttemptMs_ = millis();
 }
 
@@ -257,14 +300,67 @@ bool GatewayClient::sendRequest(const char *method,
 }
 
 void GatewayClient::sendConnectRequest() {
-  DynamicJsonDocument params(3072);
-  params["minProtocol"] = OPENCLAW_PROTOCOL_VERSION;
-  params["maxProtocol"] = OPENCLAW_PROTOCOL_VERSION;
+  if (!wsConnected_ || connectSent_) {
+    return;
+  }
+
+  String identityErr;
+  if (!ensureDeviceIdentity(&identityErr)) {
+    lastError_ = identityErr.isEmpty() ? String("Device identity unavailable") : identityErr;
+    connectSent_ = true;
+    return;
+  }
+
+  uint8_t privateKey[kDevicePrivateKeyLen] = {0};
+  uint8_t publicKey[kDevicePublicKeyLen] = {0};
+  if (!decodeBase64Url(config_.gatewayDevicePrivateKey, privateKey, sizeof(privateKey)) ||
+      !decodeBase64Url(config_.gatewayDevicePublicKey, publicKey, sizeof(publicKey))) {
+    lastError_ = "Device identity decode failed";
+    connectSent_ = true;
+    return;
+  }
+
+  String authToken;
+  bool usePassword = false;
+  connectUsedDeviceToken_ = false;
+  connectCanFallbackToShared_ = false;
+
+  if (!config_.gatewayDeviceToken.isEmpty()) {
+    authToken = config_.gatewayDeviceToken;
+    connectUsedDeviceToken_ = true;
+    connectCanFallbackToShared_ = hasSharedCredential();
+  } else if (config_.gatewayAuthMode == GatewayAuthMode::Password) {
+    usePassword = true;
+  } else {
+    authToken = config_.gatewayToken;
+  }
+
+  const uint64_t signedAtMs =
+      connectChallengeTsMs_ > 0 ? connectChallengeTsMs_ : currentUnixMs();
+  const String tokenForSignature = usePassword ? String("") : authToken;
+  const String authPayload = buildDeviceAuthPayload(signedAtMs, tokenForSignature);
+
+  uint8_t signatureBytes[kDeviceSignatureLen] = {0};
+  Ed25519::sign(signatureBytes,
+                privateKey,
+                publicKey,
+                authPayload.c_str(),
+                authPayload.length());
+  const String signatureB64 = encodeBase64Url(signatureBytes, sizeof(signatureBytes));
+  if (signatureB64.isEmpty()) {
+    lastError_ = "Device signature encode failed";
+    connectSent_ = true;
+    return;
+  }
+
+  DynamicJsonDocument params(4096);
+  params["minProtocol"] = OPENCLAW_PROTOCOL_MIN;
+  params["maxProtocol"] = OPENCLAW_PROTOCOL_MAX;
 
   JsonObject client = params.createNestedObject("client");
   client["id"] = OPENCLAW_CLIENT_ID;
   client["displayName"] = USER_OPENCLAW_DISPLAY_NAME;
-  client["version"] = "0.2.0";
+  client["version"] = OPENCLAW_CLIENT_VERSION;
   client["platform"] = "esp32s3";
   client["deviceFamily"] = "lilygo-t-embed-cc1101";
   client["modelIdentifier"] = "T_EMBED_1101";
@@ -286,15 +382,28 @@ void GatewayClient::sendConnectRequest() {
   commands.add("cc1101.tx");
 
   JsonObject auth = params.createNestedObject("auth");
-  if (config_.gatewayAuthMode == GatewayAuthMode::Password) {
+  if (usePassword) {
     auth["password"] = config_.gatewayPassword;
   } else {
-    auth["token"] = config_.gatewayToken;
+    auth["token"] = authToken;
+  }
+
+  JsonObject device = params.createNestedObject("device");
+  device["id"] = config_.gatewayDeviceId;
+  device["publicKey"] = config_.gatewayDevicePublicKey;
+  device["signature"] = signatureB64;
+  device["signedAt"] = static_cast<uint64_t>(signedAtMs);
+  if (!connectNonce_.isEmpty()) {
+    device["nonce"] = connectNonce_;
   }
 
   if (!sendRequest("connect", params, &connectRequestId_)) {
     lastError_ = "Failed to send connect request";
+    connectSent_ = false;
+    return;
   }
+
+  connectSent_ = true;
 }
 
 void GatewayClient::handleGatewayFrame(const char *text, size_t len) {
@@ -322,14 +431,38 @@ void GatewayClient::handleGatewayResponse(JsonObjectConst frame) {
   const bool ok = frame["ok"] | false;
   if (!ok) {
     gatewayReady_ = false;
-    lastError_ = String(static_cast<const char *>(frame["error"]["message"] |
-                                                   "Gateway connect rejected"));
+    const String message = String(static_cast<const char *>(frame["error"]["message"] |
+                                                              "Gateway connect rejected"));
+
+    if (connectUsedDeviceToken_ && connectCanFallbackToShared_) {
+      config_.gatewayDeviceToken = "";
+      persistGatewayConfigBestEffort();
+      connectUsedDeviceToken_ = false;
+      connectCanFallbackToShared_ = false;
+      lastError_ = message + " / retrying with shared auth";
+      reconnectNow();
+      return;
+    }
+
+    lastError_ = message;
     return;
   }
 
   gatewayReady_ = true;
   lastError_ = "";
   lastConnectOkMs_ = millis();
+
+  if (frame["payload"].is<JsonObjectConst>()) {
+    const JsonObjectConst payload = frame["payload"].as<JsonObjectConst>();
+    if (payload["auth"].is<JsonObjectConst>()) {
+      const JsonObjectConst auth = payload["auth"].as<JsonObjectConst>();
+      const String deviceToken = String(static_cast<const char *>(auth["deviceToken"] | ""));
+      if (!deviceToken.isEmpty() && deviceToken != config_.gatewayDeviceToken) {
+        config_.gatewayDeviceToken = deviceToken;
+        persistGatewayConfigBestEffort();
+      }
+    }
+  }
 
   if (telemetryBuilder_) {
     DynamicJsonDocument payload(1024);
@@ -342,6 +475,19 @@ void GatewayClient::handleGatewayResponse(JsonObjectConst frame) {
 
 void GatewayClient::handleGatewayEvent(JsonObjectConst frame) {
   const String eventName = frame["event"].as<String>();
+
+  if (eventName == "connect.challenge") {
+    if (frame["payload"].is<JsonObjectConst>()) {
+      const JsonObjectConst payload = frame["payload"].as<JsonObjectConst>();
+      connectNonce_ = String(static_cast<const char *>(payload["nonce"] | ""));
+      connectChallengeTsMs_ = payload["ts"] | static_cast<uint64_t>(0);
+      if (!connectSent_ && !connectNonce_.isEmpty()) {
+        sendConnectRequest();
+      }
+    }
+    return;
+  }
+
   if (eventName == "shutdown") {
     gatewayReady_ = false;
     lastError_ = "Gateway shutdown";
@@ -440,4 +586,174 @@ String GatewayClient::nextReqId(const char *prefix) {
   id += "-";
   id += String(reqCounter_);
   return id;
+}
+
+void GatewayClient::persistGatewayConfigBestEffort() {
+  String saveErr;
+  if (!saveConfig(config_, &saveErr) && !saveErr.isEmpty()) {
+    Serial.println("[gateway] config save warning: " + saveErr);
+  }
+}
+
+bool GatewayClient::ensureDeviceIdentity(String *error) {
+  uint8_t privateKey[kDevicePrivateKeyLen] = {0};
+  uint8_t publicKey[kDevicePublicKeyLen] = {0};
+
+  bool hasPrivate = decodeBase64Url(config_.gatewayDevicePrivateKey,
+                                    privateKey,
+                                    sizeof(privateKey));
+  bool hasPublic = decodeBase64Url(config_.gatewayDevicePublicKey,
+                                   publicKey,
+                                   sizeof(publicKey));
+
+  bool changed = false;
+
+  if (hasPrivate && !hasPublic) {
+    Ed25519::derivePublicKey(publicKey, privateKey);
+    config_.gatewayDevicePublicKey = encodeBase64Url(publicKey, sizeof(publicKey));
+    hasPublic = !config_.gatewayDevicePublicKey.isEmpty();
+    changed = true;
+  }
+
+  if (!hasPrivate || !hasPublic) {
+    esp_fill_random(privateKey, sizeof(privateKey));
+    Ed25519::derivePublicKey(publicKey, privateKey);
+    config_.gatewayDevicePrivateKey = encodeBase64Url(privateKey, sizeof(privateKey));
+    config_.gatewayDevicePublicKey = encodeBase64Url(publicKey, sizeof(publicKey));
+    config_.gatewayDeviceToken = "";
+    changed = true;
+  }
+
+  if (config_.gatewayDevicePrivateKey.isEmpty() || config_.gatewayDevicePublicKey.isEmpty()) {
+    if (error) {
+      *error = "Failed to generate device keypair";
+    }
+    return false;
+  }
+
+  const String derivedId = sha256Hex(publicKey, sizeof(publicKey));
+  if (derivedId.isEmpty()) {
+    if (error) {
+      *error = "Failed to derive device id";
+    }
+    return false;
+  }
+
+  if (config_.gatewayDeviceId != derivedId) {
+    config_.gatewayDeviceId = derivedId;
+    changed = true;
+  }
+
+  if (changed) {
+    persistGatewayConfigBestEffort();
+  }
+
+  return true;
+}
+
+bool GatewayClient::decodeBase64Url(const String &in, uint8_t *out, size_t outLen) const {
+  if (!out || outLen == 0 || in.isEmpty()) {
+    return false;
+  }
+
+  String normalized = in;
+  normalized.replace('-', '+');
+  normalized.replace('_', '/');
+  while (normalized.length() % 4 != 0) {
+    normalized += '=';
+  }
+
+  size_t decodedLen = 0;
+  const int rc = mbedtls_base64_decode(out,
+                                       outLen,
+                                       &decodedLen,
+                                       reinterpret_cast<const unsigned char *>(normalized.c_str()),
+                                       normalized.length());
+  return rc == 0 && decodedLen == outLen;
+}
+
+String GatewayClient::encodeBase64Url(const uint8_t *data, size_t len) const {
+  if (!data || len == 0) {
+    return "";
+  }
+
+  unsigned char encoded[192] = {0};
+  size_t encodedLen = 0;
+  const int rc = mbedtls_base64_encode(encoded, sizeof(encoded), &encodedLen, data, len);
+  if (rc != 0 || encodedLen == 0 || encodedLen >= sizeof(encoded)) {
+    return "";
+  }
+
+  encoded[encodedLen] = '\0';
+  String out(reinterpret_cast<const char *>(encoded));
+  out.replace('+', '-');
+  out.replace('/', '_');
+  while (out.endsWith("=")) {
+    out.remove(out.length() - 1);
+  }
+  return out;
+}
+
+String GatewayClient::sha256Hex(const uint8_t *data, size_t len) const {
+  if (!data || len == 0) {
+    return "";
+  }
+
+  SHA256 hash;
+  uint8_t digest[SHA256::HASH_SIZE] = {0};
+  hash.reset();
+  hash.update(data, len);
+  hash.finalize(digest, sizeof(digest));
+
+  static const char kHex[] = "0123456789abcdef";
+  char out[(SHA256::HASH_SIZE * 2) + 1] = {0};
+  for (size_t i = 0; i < sizeof(digest); ++i) {
+    out[i * 2] = kHex[(digest[i] >> 4) & 0x0F];
+    out[(i * 2) + 1] = kHex[digest[i] & 0x0F];
+  }
+  out[sizeof(out) - 1] = '\0';
+  return String(out);
+}
+
+String GatewayClient::buildDeviceAuthPayload(uint64_t signedAtMs,
+                                             const String &tokenForSignature) const {
+  const String version = connectNonce_.isEmpty() ? "v1" : "v2";
+
+  String payload;
+  payload.reserve(256 + tokenForSignature.length() + connectNonce_.length());
+  payload += version;
+  payload += "|";
+  payload += config_.gatewayDeviceId;
+  payload += "|";
+  payload += OPENCLAW_CLIENT_ID;
+  payload += "|";
+  payload += OPENCLAW_CLIENT_MODE;
+  payload += "|";
+  payload += "node";
+  payload += "|";
+  payload += "";  // scopes csv
+  payload += "|";
+  payload += String(static_cast<unsigned long long>(signedAtMs));
+  payload += "|";
+  payload += tokenForSignature;
+  if (version == "v2") {
+    payload += "|";
+    payload += connectNonce_;
+  }
+  return payload;
+}
+
+bool GatewayClient::hasSharedCredential() const {
+  if (config_.gatewayAuthMode == GatewayAuthMode::Password) {
+    return !config_.gatewayPassword.isEmpty();
+  }
+  return !config_.gatewayToken.isEmpty();
+}
+
+uint64_t GatewayClient::currentUnixMs() const {
+  const time_t nowSec = time(nullptr);
+  if (nowSec <= 0) {
+    return 0;
+  }
+  return static_cast<uint64_t>(nowSec) * 1000ULL;
 }

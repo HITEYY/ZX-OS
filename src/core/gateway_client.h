@@ -94,4 +94,19 @@ class GatewayClient {
 
   bool parseGatewayUrl(const String &rawUrl, GatewayEndpoint &out) const;
   String nextReqId(const char *prefix);
+  void persistGatewayConfigBestEffort();
+  bool ensureDeviceIdentity(String *error = nullptr);
+  bool decodeBase64Url(const String &in, uint8_t *out, size_t outLen) const;
+  String encodeBase64Url(const uint8_t *data, size_t len) const;
+  String sha256Hex(const uint8_t *data, size_t len) const;
+  String buildDeviceAuthPayload(uint64_t signedAtMs, const String &tokenForSignature) const;
+  bool hasSharedCredential() const;
+  uint64_t currentUnixMs() const;
+
+  String connectNonce_;
+  uint64_t connectChallengeTsMs_ = 0;
+  unsigned long connectQueuedAtMs_ = 0;
+  bool connectSent_ = false;
+  bool connectUsedDeviceToken_ = false;
+  bool connectCanFallbackToShared_ = false;
 };

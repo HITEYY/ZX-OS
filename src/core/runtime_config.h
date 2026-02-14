@@ -15,6 +15,10 @@ struct RuntimeConfig {
   GatewayAuthMode gatewayAuthMode = GatewayAuthMode::Token;
   String gatewayToken;
   String gatewayPassword;
+  String gatewayDeviceId;
+  String gatewayDevicePublicKey;
+  String gatewayDevicePrivateKey;
+  String gatewayDeviceToken;
   bool autoConnect = false;
   String bleDeviceName;
   String bleDeviceAddress;

@@ -12,6 +12,8 @@ LilyGo T-Embed CC1101 보드를 OpenClaw Remote Gateway에 `node`로 연결하�
 ## 핵심 기능
 
 - OpenClaw Gateway WebSocket 프로토콜(`req/res/event`) 호환
+- 프로토콜 v3 핸드셰이크(`connect.challenge` + `hello-ok`) 대응
+- `ws://` / `wss://` 연결 지원
 - `node.invoke.request` 처리
   - `system.which`
   - `system.run`
@@ -62,6 +64,10 @@ pio device monitor -b 115200
 - `OPENCLAW_GATEWAY_TOKEN` (또는 `GATEWAY_TOKEN`)
 - `OPENCLAW_GATEWAY_PASSWORD` (또는 `GATEWAY_PASSWORD`)
 - 선택: `OPENCLAW_GATEWAY_AUTH_MODE` (또는 `GATEWAY_AUTH_MODE`, `token|password|0|1`)
+- 선택: `OPENCLAW_GATEWAY_DEVICE_TOKEN` (또는 `GATEWAY_DEVICE_TOKEN`)
+- 선택: `OPENCLAW_GATEWAY_DEVICE_ID` (또는 `GATEWAY_DEVICE_ID`)
+- 선택: `OPENCLAW_GATEWAY_DEVICE_PUBLIC_KEY` (또는 `GATEWAY_DEVICE_PUBLIC_KEY`)
+- 선택: `OPENCLAW_GATEWAY_DEVICE_PRIVATE_KEY` (또는 `GATEWAY_DEVICE_PRIVATE_KEY`)
 
 ## 앱 설정 흐름
 

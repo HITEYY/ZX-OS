@@ -98,6 +98,7 @@ void runGatewayMenu(AppContext &ctx,
       ctx.config.gatewayUrl = "";
       ctx.config.gatewayToken = "";
       ctx.config.gatewayPassword = "";
+      ctx.config.gatewayDeviceToken = "";
       markDirty(ctx);
       ctx.ui->showToast("Gateway", "Gateway config cleared", 1200, backgroundTick);
       continue;
@@ -168,6 +169,10 @@ std::vector<String> buildStatusLines(AppContext &ctx) {
   lines.push_back("Gateway Ready: " + boolLabel(gs.gatewayReady));
   lines.push_back("Should Connect: " + boolLabel(gs.shouldConnect));
   lines.push_back("Auth Mode: " + String(gatewayAuthModeName(ctx.config.gatewayAuthMode)));
+  lines.push_back("Device Token: " + boolLabel(!ctx.config.gatewayDeviceToken.isEmpty()));
+  lines.push_back("Device ID: " +
+                  (ctx.config.gatewayDeviceId.isEmpty() ? String("(empty)")
+                                                        : ctx.config.gatewayDeviceId));
   lines.push_back("CC1101 Ready: " + boolLabel(isCc1101Ready()));
   lines.push_back("CC1101 Freq MHz: " + String(getCc1101FrequencyMhz(), 2));
 
