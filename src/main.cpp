@@ -1,0 +1,154 @@
+#include <Arduino.h>
+#include <ArduinoJson.h>
+#include <WiFi.h>
+
+#include <vector>
+
+#include "apps/app_context.h"
+#include "apps/openclaw_app.h"
+#include "apps/settings_app.h"
+#include "core/cc1101_radio.h"
+#include "core/ble_manager.h"
+#include "core/gateway_client.h"
+#include "core/node_command_handler.h"
+#include "core/runtime_config.h"
+#include "core/wifi_manager.h"
+#include "ui/ui_shell.h"
+
+namespace {
+
+UIShell gUi;
+WifiManager gWifi;
+GatewayClient gGateway;
+BleManager gBle;
+NodeCommandHandler gNodeHandler;
+AppContext gAppContext;
+
+void runBackgroundTick() {
+  gWifi.tick();
+  gGateway.tick();
+  gBle.tick();
+}
+
+String buildLauncherStatus() {
+  String line;
+  line += gWifi.isConnected() ? "WiFi:UP " : "WiFi:DOWN ";
+
+  const GatewayStatus gs = gGateway.status();
+  line += "GW:";
+  line += gs.gatewayReady ? "READY" : (gs.wsConnected ? "WS" : "IDLE");
+  line += " BLE:";
+  line += gBle.isConnected() ? "CONN" : "IDLE";
+
+  if (gAppContext.configDirty) {
+    line += "  *DIRTY";
+  }
+
+  return line;
+}
+
+void configureGatewayCallbacks() {
+  gGateway.setInvokeRequestHandler([](const String &invokeId,
+                                      const String &nodeId,
+                                      const String &command,
+                                      JsonObjectConst params) {
+    gNodeHandler.handleInvoke(invokeId, nodeId, command, params);
+  });
+
+  gGateway.setTelemetryBuilder([](JsonObject payload) {
+    appendCc1101Info(payload);
+    payload["wifiConnected"] = WiFi.status() == WL_CONNECTED;
+    payload["wifiRssi"] = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
+    payload["ip"] = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : String("");
+    payload["uptimeMs"] = millis();
+  });
+}
+
+void runLauncher() {
+  static int selected = 0;
+
+  std::vector<String> items;
+  items.push_back("OpenClaw");
+  items.push_back("Setting");
+
+  gUi.setStatusLine(buildLauncherStatus());
+  const int choice = gUi.menuLoop("Launcher",
+                                  items,
+                                  selected,
+                                  runBackgroundTick,
+                                  "OK Select",
+                                  "T-Embed CC1101");
+  if (choice < 0) {
+    return;
+  }
+
+  selected = choice;
+  if (choice == 0) {
+    runOpenClawApp(gAppContext, runBackgroundTick);
+  } else if (choice == 1) {
+    runSettingsApp(gAppContext, runBackgroundTick);
+  }
+}
+
+}  // namespace
+
+void setup() {
+  Serial.begin(115200);
+  delay(400);
+
+  gUi.begin();
+
+  const bool ccReady = initCc1101Radio();
+  if (!ccReady) {
+    gUi.showToast("CC1101", "CC1101 not detected", 1500, []() {});
+  }
+
+  bool loadedFromNvs = false;
+  String loadErr;
+  if (!loadConfig(gAppContext.config, &loadedFromNvs, &loadErr)) {
+    gAppContext.config = makeDefaultConfig();
+  }
+
+  gWifi.begin();
+  gWifi.configure(gAppContext.config);
+
+  gGateway.begin();
+  gGateway.configure(gAppContext.config);
+  configureGatewayCallbacks();
+
+  gBle.begin();
+  gBle.configure(gAppContext.config);
+
+  gNodeHandler.setGatewayClient(&gGateway);
+
+  gAppContext.wifi = &gWifi;
+  gAppContext.gateway = &gGateway;
+  gAppContext.ble = &gBle;
+  gAppContext.ui = &gUi;
+  gAppContext.configDirty = false;
+
+  if (gAppContext.config.autoConnect &&
+      !gAppContext.config.gatewayUrl.isEmpty() &&
+      hasGatewayCredentials(gAppContext.config)) {
+    gGateway.connectNow();
+  }
+
+  if (gAppContext.config.bleAutoConnect &&
+      !gAppContext.config.bleDeviceAddress.isEmpty()) {
+    gBle.connectToDevice(gAppContext.config.bleDeviceAddress,
+                         gAppContext.config.bleDeviceName,
+                         nullptr);
+  }
+
+  if (!loadErr.isEmpty()) {
+    gUi.showToast("Config", loadErr, 1800, runBackgroundTick);
+  } else if (loadedFromNvs) {
+    gUi.showToast("Config", "Loaded from NVS", 900, runBackgroundTick);
+  } else {
+    gUi.showToast("Config", "Using default seeds", 900, runBackgroundTick);
+  }
+}
+
+void loop() {
+  runLauncher();
+}
