@@ -5,7 +5,6 @@
 #include "../core/ble_manager.h"
 #include "../core/gateway_client.h"
 #include "../core/runtime_config.h"
-#include "../core/tailscale_lite_client.h"
 #include "../core/wifi_manager.h"
 #include "../ui/ui_shell.h"
 
@@ -401,11 +400,6 @@ void runSystemMenu(AppContext &ctx,
 
     ctx.ble->disconnectNow();
     ctx.ble->configure(ctx.config);
-
-    if (ctx.tailscaleLite) {
-      ctx.tailscaleLite->disconnectNow();
-      ctx.tailscaleLite->configure(ctx.config);
-    }
 
     ctx.ui->showToast("System", "Factory reset completed", 1600, backgroundTick);
     return;

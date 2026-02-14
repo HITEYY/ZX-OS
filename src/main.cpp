@@ -13,14 +13,12 @@
 #include "apps/file_explorer_app.h"
 #include "apps/openclaw_app.h"
 #include "apps/settings_app.h"
-#include "apps/tailscale_app.h"
 #include "core/cc1101_radio.h"
 #include "core/ble_manager.h"
 #include "core/board_pins.h"
 #include "core/gateway_client.h"
 #include "core/node_command_handler.h"
 #include "core/runtime_config.h"
-#include "core/tailscale_lite_client.h"
 #include "core/wifi_manager.h"
 #include "ui/ui_shell.h"
 
@@ -30,14 +28,12 @@ UIShell gUi;
 WifiManager gWifi;
 GatewayClient gGateway;
 BleManager gBle;
-TailscaleLiteClient gTailscaleLite;
 NodeCommandHandler gNodeHandler;
 AppContext gAppContext;
 XPowersPPM gPmu;
 
 void runBackgroundTick() {
   gWifi.tick();
-  gTailscaleLite.tick();
   gGateway.tick();
   gBle.tick();
 }
@@ -49,8 +45,6 @@ String buildLauncherStatus() {
   const GatewayStatus gs = gGateway.status();
   line += "GW:";
   line += gs.gatewayReady ? "READY" : (gs.wsConnected ? "WS" : "IDLE");
-  line += " TS:";
-  line += gTailscaleLite.isConnected() ? "UP" : "DOWN";
   line += " BLE:";
   line += gBle.isConnected() ? "CONN" : "IDLE";
 
@@ -102,7 +96,6 @@ void runLauncher() {
   items.push_back("OpenClaw");
   items.push_back("Setting");
   items.push_back("File Explorer");
-  items.push_back("Tailscale");
   items.push_back("APPMarket");
 
   gUi.setStatusLine(buildLauncherStatus());
@@ -124,8 +117,6 @@ void runLauncher() {
   } else if (choice == 2) {
     runFileExplorerApp(gAppContext, runBackgroundTick);
   } else if (choice == 3) {
-    runTailscaleApp(gAppContext, runBackgroundTick);
-  } else if (choice == 4) {
     runAppMarketApp(gAppContext, runBackgroundTick);
   }
 }
@@ -173,24 +164,14 @@ void setup() {
 
   gBle.begin();
   gBle.configure(gAppContext.config);
-  gTailscaleLite.begin();
-  gTailscaleLite.configure(gAppContext.config);
 
   gNodeHandler.setGatewayClient(&gGateway);
 
   gAppContext.wifi = &gWifi;
   gAppContext.gateway = &gGateway;
   gAppContext.ble = &gBle;
-  gAppContext.tailscaleLite = &gTailscaleLite;
   gAppContext.ui = &gUi;
   gAppContext.configDirty = false;
-
-  if (gAppContext.config.tailscaleLiteEnabled) {
-    String liteErr;
-    if (!gTailscaleLite.connectNow(&liteErr) && !liteErr.isEmpty()) {
-      Serial.println("[boot] tailscale-lite: " + liteErr);
-    }
-  }
 
   if (gAppContext.config.autoConnect &&
       !gAppContext.config.gatewayUrl.isEmpty() &&

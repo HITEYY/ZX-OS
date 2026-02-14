@@ -8,7 +8,6 @@
 #include "../core/ble_manager.h"
 #include "../core/gateway_client.h"
 #include "../core/runtime_config.h"
-#include "../core/tailscale_lite_client.h"
 #include "../core/wifi_manager.h"
 #include "../ui/ui_shell.h"
 
@@ -127,17 +126,6 @@ void applyRuntimeConfig(AppContext &ctx,
   ctx.wifi->configure(ctx.config);
   ctx.gateway->configure(ctx.config);
   ctx.ble->configure(ctx.config);
-  if (ctx.tailscaleLite) {
-    ctx.tailscaleLite->configure(ctx.config);
-    if (ctx.config.tailscaleLiteEnabled) {
-      String liteErr;
-      if (!ctx.tailscaleLite->connectNow(&liteErr) && !liteErr.isEmpty()) {
-        ctx.ui->showToast("Tailscale Lite", liteErr, 1600, backgroundTick);
-      }
-    } else {
-      ctx.tailscaleLite->disconnectNow();
-    }
-  }
 
   if (!ctx.config.gatewayUrl.isEmpty() && hasGatewayCredentials(ctx.config)) {
     ctx.gateway->reconnectNow();

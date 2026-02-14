@@ -19,16 +19,8 @@ struct RuntimeConfig {
   String bleDeviceName;
   String bleDeviceAddress;
   bool bleAutoConnect = false;
-  String tailscaleLoginServer;
-  String tailscaleAuthKey;
   String appMarketGithubRepo;
   String appMarketReleaseAsset;
-  bool tailscaleLiteEnabled = false;
-  String tailscaleLiteNodeIp;
-  String tailscaleLitePrivateKey;
-  String tailscaleLitePeerHost;
-  uint16_t tailscaleLitePeerPort = 41641;
-  String tailscaleLitePeerPublicKey;
 };
 
 enum class ConfigLoadSource : uint8_t {

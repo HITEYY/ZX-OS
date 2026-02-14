@@ -7,7 +7,6 @@ LilyGo T-Embed CC1101 보드를 OpenClaw Remote Gateway에 `node`로 연결하�
 - `OpenClaw` 앱: 상태 확인 + Gateway 설정 + Save & Apply + Connect/Disconnect/Reconnect
 - `Setting` 앱: Wi-Fi 설정 + BLE 스캔/연결/저장(재접속 대상) + System(Factory Reset)
 - `File Explorer` 앱: SD 카드 마운트/용량 확인/디렉토리 탐색/텍스트 미리보기/Quick Format
-- `Tailscale` 앱: Lite Direct(WireGuard) 설정 + Auth Key/.env 로드 + OpenClaw URL 반영
 - `APPMarket` 앱: GitHub 최신 릴리스 조회/다운로드 + SD 패키지 관리 + 펌웨어 설치/재설치/백업
 
 ## 핵심 기능
@@ -16,11 +15,10 @@ LilyGo T-Embed CC1101 보드를 OpenClaw Remote Gateway에 `node`로 연결하�
 - `node.invoke.request` 처리
   - `system.which`
   - `system.run`
-  - `cc1101.info`
-  - `cc1101.set_freq`
-  - `cc1101.tx`
+- `cc1101.info`
+- `cc1101.set_freq`
+- `cc1101.tx`
 - 설정 영구 저장(SD: `/oc_cfg.json`, NVS 백업: namespace `oc_cfg`)
-- `Tailscale Lite`(WireGuard direct) 직접 연결 모드
 - Bruce 스타일 QWERTY 입력(온디바이스 키보드)
   - 전체 QWERTY 키보드 동시 표시 + `DONE/CAPS/DEL/SPACE/CANCEL`
   - ROT로 키 이동, OK로 입력, BACK으로 취소
@@ -39,7 +37,6 @@ LilyGo T-Embed CC1101 보드를 OpenClaw Remote Gateway에 `node`로 연결하�
 - `src/apps/openclaw_app.*`: OpenClaw 앱
 - `src/apps/settings_app.*`: Setting 앱
 - `src/apps/file_explorer_app.*`: File Explorer 앱
-- `src/apps/tailscale_app.*`: Tailscale 앱
 - `src/apps/app_market_app.*`: APPMarket 앱
 - `src/main.cpp`: 부트스트랩 + 런처 오케스트레이션
 
@@ -101,44 +98,6 @@ pio device monitor -b 115200
 - `Install from SD .bin`: SD 카드의 임의 `.bin` 선택 설치
 - `Delete Latest Package` / `Delete Backup Package`: SD 패키지 삭제
 - `Save Config`: APPMarket 설정(repo/asset) 저장
-
-## Tailscale Lite (WireGuard direct)
-
-참고한 문서/프로젝트:
-
-- [tailscale-iot](https://github.com/alfs/tailscale-iot)
-- [Tailscale small binaries](https://tailscale.com/docs/how-to/set-up-small-tailscale)
-
-`Tailscale` 앱은 Lite Direct(WireGuard)만 제공합니다.
-보안 정책 일관성을 위해 Lite 모드도 `Auth Key`가 비어 있으면 저장/적용되지 않습니다.
-
-- 메뉴:
-  - `Auth Key`
-  - `Auth Load from SD .env`
-  - `Lite Quick Setup from SD .env`
-  - `Lite Enabled`
-  - `Lite Connect` / `Lite Disconnect`
-
-디바이스 설정 순서:
-
-1. `Setting -> Wi-Fi`에서 네트워크 연결
-2. `OpenClaw -> Gateway`에서 Gateway URL/Auth 입력
-3. `Tailscale` 앱에서 `Auth Key` 또는 `Auth Load from SD .env`로 키 입력
-4. `Lite Quick Setup from SD .env` 실행 (Lite 터널 설정 자동 적용)
-5. 필요 시 `Lite Connect`
-
-`.env` 키 예시:
-
-```env
-TAILSCALE_AUTH_KEY=tskey-xxxxx
-TAILSCALE_LOGIN_SERVER=https://headscale.example.com
-TAILSCALE_LITE_NODE_IP=100.100.0.10
-TAILSCALE_LITE_PRIVATE_KEY=xxxxx
-TAILSCALE_LITE_PEER_HOST=your-peer.example.com
-TAILSCALE_LITE_PEER_PORT=41641
-TAILSCALE_LITE_PEER_PUBLIC_KEY=yyyyy
-OPENCLAW_GATEWAY_URL=ws://100.100.0.1:8080
-```
 
 ## BLE 연결 범위
 

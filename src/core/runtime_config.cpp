@@ -210,59 +210,6 @@ bool writeConfigToSd(const String &blob, String *error = nullptr) {
   return true;
 }
 
-uint16_t sanitizeLitePeerPort(int value) {
-  if (value >= 1 && value <= 65535) {
-    return static_cast<uint16_t>(value);
-  }
-
-  if (USER_TAILSCALE_LITE_PEER_PORT >= 1 &&
-      USER_TAILSCALE_LITE_PEER_PORT <= 65535) {
-    return static_cast<uint16_t>(USER_TAILSCALE_LITE_PEER_PORT);
-  }
-
-  return 41641;
-}
-
-bool isValidIpv4Address(const String &value) {
-  if (value.isEmpty()) {
-    return false;
-  }
-
-  int partCount = 0;
-  int partValue = 0;
-  int partDigits = 0;
-
-  for (size_t i = 0; i < value.length(); ++i) {
-    const char c = value[i];
-    if (c >= '0' && c <= '9') {
-      partValue = (partValue * 10) + (c - '0');
-      ++partDigits;
-      if (partValue > 255 || partDigits > 3) {
-        return false;
-      }
-      continue;
-    }
-
-    if (c != '.') {
-      return false;
-    }
-    if (partDigits == 0) {
-      return false;
-    }
-    ++partCount;
-    if (partCount > 3) {
-      return false;
-    }
-    partValue = 0;
-    partDigits = 0;
-  }
-
-  if (partCount != 3 || partDigits == 0) {
-    return false;
-  }
-  return true;
-}
-
 bool isHexDigitChar(char c) {
   return (c >= '0' && c <= '9') ||
          (c >= 'a' && c <= 'f') ||
@@ -320,16 +267,8 @@ void toJson(const RuntimeConfig &config, JsonObject obj) {
   obj["bleDeviceName"] = config.bleDeviceName;
   obj["bleDeviceAddress"] = config.bleDeviceAddress;
   obj["bleAutoConnect"] = config.bleAutoConnect;
-  obj["tailscaleLoginServer"] = config.tailscaleLoginServer;
-  obj["tailscaleAuthKey"] = config.tailscaleAuthKey;
   obj["appMarketGithubRepo"] = config.appMarketGithubRepo;
   obj["appMarketReleaseAsset"] = config.appMarketReleaseAsset;
-  obj["tailscaleLiteEnabled"] = config.tailscaleLiteEnabled;
-  obj["tailscaleLiteNodeIp"] = config.tailscaleLiteNodeIp;
-  obj["tailscaleLitePrivateKey"] = config.tailscaleLitePrivateKey;
-  obj["tailscaleLitePeerHost"] = config.tailscaleLitePeerHost;
-  obj["tailscaleLitePeerPort"] = config.tailscaleLitePeerPort;
-  obj["tailscaleLitePeerPublicKey"] = config.tailscaleLitePeerPublicKey;
 }
 
 void fromJson(const JsonObjectConst &obj, RuntimeConfig &config) {
@@ -344,27 +283,12 @@ void fromJson(const JsonObjectConst &obj, RuntimeConfig &config) {
   config.bleDeviceName = String(static_cast<const char *>(obj["bleDeviceName"] | ""));
   config.bleDeviceAddress = String(static_cast<const char *>(obj["bleDeviceAddress"] | ""));
   config.bleAutoConnect = obj["bleAutoConnect"] | false;
-  config.tailscaleLoginServer =
-      String(static_cast<const char *>(obj["tailscaleLoginServer"] | ""));
-  config.tailscaleAuthKey =
-      String(static_cast<const char *>(obj["tailscaleAuthKey"] | ""));
   config.appMarketGithubRepo =
       String(static_cast<const char *>(obj["appMarketGithubRepo"] |
                                        USER_APPMARKET_GITHUB_REPO));
   config.appMarketReleaseAsset =
       String(static_cast<const char *>(obj["appMarketReleaseAsset"] |
                                        USER_APPMARKET_RELEASE_ASSET));
-  config.tailscaleLiteEnabled = obj["tailscaleLiteEnabled"] | USER_TAILSCALE_LITE_ENABLED;
-  config.tailscaleLiteNodeIp =
-      String(static_cast<const char *>(obj["tailscaleLiteNodeIp"] | ""));
-  config.tailscaleLitePrivateKey =
-      String(static_cast<const char *>(obj["tailscaleLitePrivateKey"] | ""));
-  config.tailscaleLitePeerHost =
-      String(static_cast<const char *>(obj["tailscaleLitePeerHost"] | ""));
-  config.tailscaleLitePeerPort =
-      sanitizeLitePeerPort(obj["tailscaleLitePeerPort"] | USER_TAILSCALE_LITE_PEER_PORT);
-  config.tailscaleLitePeerPublicKey =
-      String(static_cast<const char *>(obj["tailscaleLitePeerPublicKey"] | ""));
 }
 
 }  // namespace
@@ -397,31 +321,11 @@ RuntimeConfig makeDefaultConfig() {
   }
 
   config.autoConnect = USER_AUTO_CONNECT_DEFAULT;
-  if (!isPlaceholder(USER_TAILSCALE_LOGIN_SERVER)) {
-    config.tailscaleLoginServer = USER_TAILSCALE_LOGIN_SERVER;
-  }
-  if (!isPlaceholder(USER_TAILSCALE_AUTH_KEY)) {
-    config.tailscaleAuthKey = USER_TAILSCALE_AUTH_KEY;
-  }
   if (!isPlaceholder(USER_APPMARKET_GITHUB_REPO)) {
     config.appMarketGithubRepo = USER_APPMARKET_GITHUB_REPO;
   }
   if (!isPlaceholder(USER_APPMARKET_RELEASE_ASSET)) {
     config.appMarketReleaseAsset = USER_APPMARKET_RELEASE_ASSET;
-  }
-  config.tailscaleLiteEnabled = USER_TAILSCALE_LITE_ENABLED;
-  if (!isPlaceholder(USER_TAILSCALE_LITE_NODE_IP)) {
-    config.tailscaleLiteNodeIp = USER_TAILSCALE_LITE_NODE_IP;
-  }
-  if (!isPlaceholder(USER_TAILSCALE_LITE_PRIVATE_KEY)) {
-    config.tailscaleLitePrivateKey = USER_TAILSCALE_LITE_PRIVATE_KEY;
-  }
-  if (!isPlaceholder(USER_TAILSCALE_LITE_PEER_HOST)) {
-    config.tailscaleLitePeerHost = USER_TAILSCALE_LITE_PEER_HOST;
-  }
-  config.tailscaleLitePeerPort = sanitizeLitePeerPort(USER_TAILSCALE_LITE_PEER_PORT);
-  if (!isPlaceholder(USER_TAILSCALE_LITE_PEER_PUBLIC_KEY)) {
-    config.tailscaleLitePeerPublicKey = USER_TAILSCALE_LITE_PEER_PUBLIC_KEY;
   }
 
   return config;
@@ -470,39 +374,6 @@ bool validateConfig(const RuntimeConfig &config, String *error) {
       *error = "APPMarket GitHub repo must be owner/repo";
     }
     return false;
-  }
-
-  if (config.tailscaleLiteEnabled) {
-    if (config.tailscaleAuthKey.isEmpty()) {
-      if (error) {
-        *error = "Tailscale auth key is required for Lite mode";
-      }
-      return false;
-    }
-    if (!isValidIpv4Address(config.tailscaleLiteNodeIp)) {
-      if (error) {
-        *error = "Tailscale Lite node IP must be IPv4";
-      }
-      return false;
-    }
-    if (config.tailscaleLitePrivateKey.isEmpty()) {
-      if (error) {
-        *error = "Tailscale Lite private key is empty";
-      }
-      return false;
-    }
-    if (config.tailscaleLitePeerHost.isEmpty()) {
-      if (error) {
-        *error = "Tailscale Lite peer host is empty";
-      }
-      return false;
-    }
-    if (config.tailscaleLitePeerPublicKey.isEmpty()) {
-      if (error) {
-        *error = "Tailscale Lite peer public key is empty";
-      }
-      return false;
-    }
   }
 
   return true;
