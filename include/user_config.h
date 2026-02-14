@@ -26,6 +26,12 @@
 #define USER_TAILSCALE_RELAY_API_BASE_PATH "/api/tailscale"
 #define USER_TAILSCALE_RELAY_API_TOKEN ""
 
+// Optional APPMarket defaults.
+// Format: owner/repo (example: myorg/myfirmware)
+#define USER_APPMARKET_GITHUB_REPO ""
+// Release asset file name (example: t-embed-cc1101.bin)
+#define USER_APPMARKET_RELEASE_ASSET ""
+
 // Optional Relay-less Tailscale Lite defaults (WireGuard direct).
 // Fill these only when using native lite tunnel mode.
 #define USER_TAILSCALE_LITE_ENABLED false

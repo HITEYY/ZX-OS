@@ -25,6 +25,8 @@ struct RuntimeConfig {
   uint16_t tailscaleRelayApiPort = 9080;
   String tailscaleRelayApiBasePath;
   String tailscaleRelayApiToken;
+  String appMarketGithubRepo;
+  String appMarketReleaseAsset;
   bool tailscaleLiteEnabled = false;
   String tailscaleLiteNodeIp;
   String tailscaleLitePrivateKey;

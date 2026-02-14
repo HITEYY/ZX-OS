@@ -56,7 +56,7 @@ bool mountSd(String *reason = nullptr) {
 bool parseConfigBlob(const String &blob,
                      RuntimeConfig &outConfig,
                      String *error = nullptr) {
-  DynamicJsonDocument doc(2048);
+  DynamicJsonDocument doc(4096);
   const auto parseErr = deserializeJson(doc, blob);
   if (parseErr || !doc.is<JsonObject>()) {
     if (error) {
@@ -323,6 +323,20 @@ bool isValidBleAddress(const String &address) {
   return true;
 }
 
+bool isValidGithubRepoSlug(const String &repoSlug) {
+  if (repoSlug.isEmpty()) {
+    return true;
+  }
+  const int slash = repoSlug.indexOf('/');
+  if (slash <= 0 || slash >= static_cast<int>(repoSlug.length()) - 1) {
+    return false;
+  }
+  if (repoSlug.indexOf('/', static_cast<unsigned int>(slash + 1)) >= 0) {
+    return false;
+  }
+  return true;
+}
+
 GatewayAuthMode sanitizeAuthMode(int mode) {
   return mode == 1 ? GatewayAuthMode::Password : GatewayAuthMode::Token;
 }
@@ -345,6 +359,8 @@ void toJson(const RuntimeConfig &config, JsonObject obj) {
   obj["tailscaleRelayApiPort"] = config.tailscaleRelayApiPort;
   obj["tailscaleRelayApiBasePath"] = config.tailscaleRelayApiBasePath;
   obj["tailscaleRelayApiToken"] = config.tailscaleRelayApiToken;
+  obj["appMarketGithubRepo"] = config.appMarketGithubRepo;
+  obj["appMarketReleaseAsset"] = config.appMarketReleaseAsset;
   obj["tailscaleLiteEnabled"] = config.tailscaleLiteEnabled;
   obj["tailscaleLiteNodeIp"] = config.tailscaleLiteNodeIp;
   obj["tailscaleLitePrivateKey"] = config.tailscaleLitePrivateKey;
@@ -378,6 +394,12 @@ void fromJson(const JsonObjectConst &obj, RuntimeConfig &config) {
                                        USER_TAILSCALE_RELAY_API_BASE_PATH)));
   config.tailscaleRelayApiToken =
       String(static_cast<const char *>(obj["tailscaleRelayApiToken"] | ""));
+  config.appMarketGithubRepo =
+      String(static_cast<const char *>(obj["appMarketGithubRepo"] |
+                                       USER_APPMARKET_GITHUB_REPO));
+  config.appMarketReleaseAsset =
+      String(static_cast<const char *>(obj["appMarketReleaseAsset"] |
+                                       USER_APPMARKET_RELEASE_ASSET));
   config.tailscaleLiteEnabled = obj["tailscaleLiteEnabled"] | USER_TAILSCALE_LITE_ENABLED;
   config.tailscaleLiteNodeIp =
       String(static_cast<const char *>(obj["tailscaleLiteNodeIp"] | ""));
@@ -436,6 +458,12 @@ RuntimeConfig makeDefaultConfig() {
   if (!isPlaceholder(USER_TAILSCALE_RELAY_API_TOKEN)) {
     config.tailscaleRelayApiToken = USER_TAILSCALE_RELAY_API_TOKEN;
   }
+  if (!isPlaceholder(USER_APPMARKET_GITHUB_REPO)) {
+    config.appMarketGithubRepo = USER_APPMARKET_GITHUB_REPO;
+  }
+  if (!isPlaceholder(USER_APPMARKET_RELEASE_ASSET)) {
+    config.appMarketReleaseAsset = USER_APPMARKET_RELEASE_ASSET;
+  }
   config.tailscaleLiteEnabled = USER_TAILSCALE_LITE_ENABLED;
   if (!isPlaceholder(USER_TAILSCALE_LITE_NODE_IP)) {
     config.tailscaleLiteNodeIp = USER_TAILSCALE_LITE_NODE_IP;
@@ -488,6 +516,13 @@ bool validateConfig(const RuntimeConfig &config, String *error) {
   if (!isValidBleAddress(config.bleDeviceAddress)) {
     if (error) {
       *error = "BLE address format must be XX:XX:XX:XX:XX:XX";
+    }
+    return false;
+  }
+
+  if (!isValidGithubRepoSlug(config.appMarketGithubRepo)) {
+    if (error) {
+      *error = "APPMarket GitHub repo must be owner/repo";
     }
     return false;
   }
@@ -598,7 +633,7 @@ bool saveConfig(const RuntimeConfig &config, String *error) {
     return false;
   }
 
-  DynamicJsonDocument doc(2048);
+  DynamicJsonDocument doc(4096);
   toJson(config, doc.to<JsonObject>());
 
   String blob;

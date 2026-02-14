@@ -8,6 +8,7 @@
 
 #include <vector>
 
+#include "apps/app_market_app.h"
 #include "apps/app_context.h"
 #include "apps/file_explorer_app.h"
 #include "apps/openclaw_app.h"
@@ -102,6 +103,7 @@ void runLauncher() {
   items.push_back("Setting");
   items.push_back("File Explorer");
   items.push_back("Tailscale");
+  items.push_back("APPMarket");
 
   gUi.setStatusLine(buildLauncherStatus());
   const int choice = gUi.menuLoop("Launcher",
@@ -123,6 +125,8 @@ void runLauncher() {
     runFileExplorerApp(gAppContext, runBackgroundTick);
   } else if (choice == 3) {
     runTailscaleApp(gAppContext, runBackgroundTick);
+  } else if (choice == 4) {
+    runAppMarketApp(gAppContext, runBackgroundTick);
   }
 }
 

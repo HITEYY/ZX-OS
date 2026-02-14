@@ -8,6 +8,7 @@ LilyGo T-Embed CC1101 보드를 OpenClaw Remote Gateway에 `node`로 연결하�
 - `Setting` 앱: Wi-Fi 설정 + BLE 스캔/연결/저장(재접속 대상) + System(Factory Reset)
 - `File Explorer` 앱: SD 카드 마운트/용량 확인/디렉토리 탐색/텍스트 미리보기/Quick Format
 - `Tailscale` 앱: Relay(host/port/path/ws/wss) 설정 + TCP 프로브 + Relay API Login/Logout/Status + Lite Direct(WireGuard, no relay) + OpenClaw URL 반영
+- `APPMarket` 앱: GitHub 최신 릴리스 조회/다운로드 + SD 패키지 관리 + 펌웨어 설치/재설치/백업
 
 ## 핵심 기능
 
@@ -39,6 +40,7 @@ LilyGo T-Embed CC1101 보드를 OpenClaw Remote Gateway에 `node`로 연결하�
 - `src/apps/settings_app.*`: Setting 앱
 - `src/apps/file_explorer_app.*`: File Explorer 앱
 - `src/apps/tailscale_app.*`: Tailscale 앱
+- `src/apps/app_market_app.*`: APPMarket 앱
 - `src/main.cpp`: 부트스트랩 + 런처 오케스트레이션
 
 ## 빌드/업로드
@@ -80,6 +82,24 @@ pio device monitor -b 115200
 
 5. `Setting -> System -> Factory Reset`
 - 2단계 확인 후 SD 설정 파일 + NVS 백업 설정 삭제
+
+## APPMarket 사용
+
+`APPMarket` 앱에서 펌웨어 배포본을 GitHub에서 받아 SD로 관리하고 설치할 수 있습니다.
+
+1. `GitHub Repo`에 `owner/repo` 형식 입력
+2. (선택) `Release Asset`에 원하는 `.bin` 파일명 입력
+   - 비워두면 latest release의 첫 `.bin` 자산을 자동 선택
+3. `Check Latest`로 최신 tag/asset 확인
+4. `Download Latest to SD`로 `/appmarket/latest.bin` 저장
+5. `Install Latest`로 최신 버전 덮어쓰기(재부팅)
+
+추가 기능:
+- `Backup Running App to SD`: 현재 실행 중 펌웨어를 `/appmarket/current_backup.bin`으로 전송
+- `Reinstall from Backup`: 백업본 재설치
+- `Install from SD .bin`: SD 카드의 임의 `.bin` 선택 설치
+- `Delete Latest Package` / `Delete Backup Package`: SD 패키지 삭제
+- `Save Config`: APPMarket 설정(repo/asset) 저장
 
 ## Tailscale로 OpenClaw 연결
 

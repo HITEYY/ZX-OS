@@ -15,6 +15,7 @@ enum class AppId : uint8_t {
   Settings = 1,
   FileExplorer = 2,
   Tailscale = 3,
+  AppMarket = 4,
 };
 
 struct AppContext {
