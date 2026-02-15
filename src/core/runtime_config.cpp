@@ -518,6 +518,7 @@ void toJson(const RuntimeConfig &config, JsonObject obj) {
   obj["appMarketGithubRepo"] = config.appMarketGithubRepo;
   obj["appMarketReleaseAsset"] = config.appMarketReleaseAsset;
   obj["uiLanguage"] = config.uiLanguage;
+  obj["timezoneTz"] = config.timezoneTz;
 }
 
 void fromJson(const JsonObjectConst &obj, RuntimeConfig &config) {
@@ -547,6 +548,8 @@ void fromJson(const JsonObjectConst &obj, RuntimeConfig &config) {
       String(static_cast<const char *>(obj["appMarketReleaseAsset"] |
                                        USER_APPMARKET_RELEASE_ASSET));
   config.uiLanguage = String(static_cast<const char *>(obj["uiLanguage"] | "en"));
+  config.timezoneTz =
+      String(static_cast<const char *>(obj["timezoneTz"] | USER_TIMEZONE_TZ));
 }
 
 }  // namespace
@@ -586,6 +589,7 @@ RuntimeConfig makeDefaultConfig() {
     config.appMarketReleaseAsset = USER_APPMARKET_RELEASE_ASSET;
   }
   config.uiLanguage = "en";
+  config.timezoneTz = USER_TIMEZONE_TZ;
 
   return config;
 }
@@ -641,6 +645,13 @@ bool validateConfig(const RuntimeConfig &config, String *error) {
   if (!isValidUiLanguageCode(config.uiLanguage)) {
     if (error) {
       *error = "UI language must be en or ko";
+    }
+    return false;
+  }
+
+  if (config.timezoneTz.isEmpty()) {
+    if (error) {
+      *error = "Timezone cannot be empty";
     }
     return false;
   }

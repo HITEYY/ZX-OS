@@ -150,4 +150,3 @@ void InputAdapter::readCb(lv_indev_t *indev, lv_indev_data_t *data) {
     data->state = LV_INDEV_STATE_RELEASED;
   }
 }
-

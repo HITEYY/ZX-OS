@@ -2,27 +2,55 @@
 
 #include <WiFi.h>
 #include <Wire.h>
+#include <SD.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
 #include <lvgl.h>
 
 #include <time.h>
+#include <string.h>
 
 #include "../core/board_pins.h"
 #include "input_adapter.h"
+#include "launcher_icons.h"
 #include "lvgl_port.h"
 #include "user_config.h"
 
 namespace {
 
-constexpr int kHeaderHeight = 22;
-constexpr int kSubtitleHeight = 18;
-constexpr int kFooterHeight = 14;
-constexpr int kRowHeight = 18;
-constexpr int kSidePadding = 4;
+constexpr int kHeaderHeight = 24;
+constexpr int kSubtitleHeight = 17;
+constexpr int kFooterHeight = 18;
+constexpr int kRowHeight = 20;
+constexpr int kSidePadding = 8;
 constexpr int kMinContentHeight = 24;
+constexpr lv_style_selector_t kStyleAny =
+    static_cast<lv_style_selector_t>(LV_PART_MAIN) |
+    static_cast<lv_style_selector_t>(LV_STATE_ANY);
+
+constexpr uint32_t kClrBg = 0x0B0F14;
+constexpr uint32_t kClrPanel = 0x121923;
+constexpr uint32_t kClrPanelSoft = 0x0F151E;
+constexpr uint32_t kClrBorder = 0x2A3544;
+constexpr uint32_t kClrAccent = 0x58A6FF;
+constexpr uint32_t kClrAccentSoft = 0x1D304B;
+constexpr uint32_t kClrTextPrimary = 0xF5F7FA;
+constexpr uint32_t kClrTextMuted = 0xAAB7C8;
+constexpr lv_opa_t kOpa75 = static_cast<lv_opa_t>(191);
+constexpr lv_opa_t kOpa85 = static_cast<lv_opa_t>(217);
+constexpr lv_opa_t kOpa90 = static_cast<lv_opa_t>(230);
+constexpr lv_opa_t kOpa92 = static_cast<lv_opa_t>(235);
 
 constexpr unsigned long kHeaderRefreshMs = 1000UL;
 constexpr unsigned long kBatteryPollMs = 5000UL;
 constexpr unsigned long kNtpRetryMs = 30000UL;
+constexpr unsigned long kSdPollMs = 8000UL;
+
+constexpr uint32_t kLauncherBg = kClrBg;
+constexpr uint32_t kLauncherPrimary = 0xEAF6FF;
+constexpr uint32_t kLauncherSide = 0x2D6F93;
+constexpr uint32_t kLauncherMuted = 0x8FB6CC;
+constexpr uint32_t kLauncherLine = 0x1A3344;
 
 int wrapIndex(int value, int count) {
   if (count <= 0) {
@@ -59,6 +87,28 @@ String formatUptimeClock(unsigned long ms) {
   return String(buf);
 }
 
+String ellipsize(const String &text, size_t maxLen) {
+  if (maxLen < 4 || text.length() <= maxLen) {
+    return text;
+  }
+  const size_t keep = maxLen - 3;
+  return text.substring(0, keep) + "...";
+}
+
+LauncherIconId iconIdFromLauncherIndex(int index) {
+  switch (wrapIndex(index, 4)) {
+    case 0:
+      return LauncherIconId::AppMarket;
+    case 1:
+      return LauncherIconId::Settings;
+    case 2:
+      return LauncherIconId::FileExplorer;
+    case 3:
+    default:
+      return LauncherIconId::OpenClaw;
+  }
+}
+
 }  // namespace
 
 class UiRuntime::Impl {
@@ -68,13 +118,17 @@ class UiRuntime::Impl {
 
   String statusLine;
   UiLanguage language = UiLanguage::English;
+  String timezoneTz = USER_TIMEZONE_TZ;
 
   String headerTime;
   String headerStatus;
   int batteryPct = -1;
+  int sdPct = -1;
   bool ntpStarted = false;
+  bool launcherIconsAvailable = false;
   unsigned long lastNtpAttemptMs = 0;
   unsigned long lastBatteryPollMs = 0;
+  unsigned long lastSdPollMs = 0;
   unsigned long lastHeaderUpdateMs = 0;
 
   lv_obj_t *progressOverlay = nullptr;
@@ -92,22 +146,20 @@ class UiRuntime::Impl {
 
     input.begin(port.display());
     applyTheme();
+    launcherIconsAvailable = initLauncherIcons();
     return true;
   }
 
   void applyTheme() {
     lv_theme_t *theme = lv_theme_default_init(port.display(),
                                               lv_palette_main(LV_PALETTE_BLUE),
-                                              lv_palette_main(LV_PALETTE_GREY),
+                                              lv_palette_main(LV_PALETTE_BLUE_GREY),
                                               true,
                                               &lv_font_montserrat_14);
     lv_display_set_theme(port.display(), theme);
   }
 
   const lv_font_t *font() const {
-    if (language == UiLanguage::Korean) {
-      return &lv_font_source_han_sans_sc_14_cjk;
-    }
     return &lv_font_montserrat_14;
   }
 
@@ -171,7 +223,8 @@ class UiRuntime::Impl {
     if (WiFi.status() == WL_CONNECTED && !ntpStarted &&
         now - lastNtpAttemptMs >= kNtpRetryMs) {
       lastNtpAttemptMs = now;
-      configTzTime(USER_TIMEZONE_TZ, USER_NTP_SERVER_1, USER_NTP_SERVER_2);
+      const char *tz = timezoneTz.isEmpty() ? USER_TIMEZONE_TZ : timezoneTz.c_str();
+      configTzTime(tz, USER_NTP_SERVER_1, USER_NTP_SERVER_2);
       ntpStarted = true;
     }
 
@@ -205,10 +258,188 @@ class UiRuntime::Impl {
     headerStatus = status;
   }
 
+  void setTimezone(const String &tz) {
+    String next = tz;
+    next.trim();
+    if (next.isEmpty()) {
+      next = USER_TIMEZONE_TZ;
+    }
+    timezoneTz = next;
+    ntpStarted = false;
+    lastNtpAttemptMs = 0;
+  }
+
+  String timezone() const {
+    if (timezoneTz.isEmpty()) {
+      return String(USER_TIMEZONE_TZ);
+    }
+    return timezoneTz;
+  }
+
+  bool syncTimezoneFromIp(String *resolvedTz, String *error) {
+    if (error) {
+      error->clear();
+    }
+
+    if (WiFi.status() != WL_CONNECTED) {
+      if (error) {
+        *error = "Wi-Fi not connected";
+      }
+      return false;
+    }
+
+    HTTPClient http;
+    http.setConnectTimeout(3500);
+    http.setTimeout(4500);
+
+    const char *url = "http://ip-api.com/json/?fields=status,timezone,message";
+    if (!http.begin(url)) {
+      if (error) {
+        *error = "HTTP begin failed";
+      }
+      return false;
+    }
+
+    const int statusCode = http.GET();
+    if (statusCode != HTTP_CODE_OK) {
+      if (error) {
+        *error = "IP lookup failed (" + String(statusCode) + ")";
+      }
+      http.end();
+      return false;
+    }
+
+    const String payload = http.getString();
+    http.end();
+
+    DynamicJsonDocument doc(768);
+    const auto jsonErr = deserializeJson(doc, payload);
+    if (jsonErr) {
+      if (error) {
+        *error = "IP lookup parse failed";
+      }
+      return false;
+    }
+
+    const char *status = doc["status"] | "";
+    if (strlen(status) > 0 && strcmp(status, "success") != 0) {
+      if (error) {
+        const char *msg = doc["message"] | "IP lookup rejected";
+        *error = String(msg);
+      }
+      return false;
+    }
+
+    const char *zone = doc["timezone"] | "";
+    String tz = String(zone);
+    tz.trim();
+    if (tz.isEmpty()) {
+      if (error) {
+        *error = "Timezone not found from IP";
+      }
+      return false;
+    }
+
+    setTimezone(tz);
+    configTzTime(timezoneTz.c_str(), USER_NTP_SERVER_1, USER_NTP_SERVER_2);
+    ntpStarted = true;
+    lastNtpAttemptMs = millis();
+
+    if (resolvedTz) {
+      *resolvedTz = timezoneTz;
+    }
+    return true;
+  }
+
+  void updateSdPercent() {
+    const unsigned long now = millis();
+    if (lastSdPollMs != 0 && now - lastSdPollMs < kSdPollMs) {
+      return;
+    }
+    lastSdPollMs = now;
+
+    const uint64_t totalBytes = SD.totalBytes();
+    if (totalBytes == 0) {
+      sdPct = -1;
+      return;
+    }
+
+    uint64_t usedBytes = SD.usedBytes();
+    if (usedBytes > totalBytes) {
+      usedBytes = totalBytes;
+    }
+
+    const uint64_t pct = (usedBytes * 100ULL + (totalBytes / 2ULL)) / totalBytes;
+    sdPct = static_cast<int>(pct);
+    if (sdPct < 0) {
+      sdPct = 0;
+    }
+    if (sdPct > 100) {
+      sdPct = 100;
+    }
+  }
+
+  void drawBatteryIcon(lv_obj_t *parent, int x, int y) const {
+    constexpr int bodyW = 18;
+    constexpr int bodyH = 9;
+    constexpr int capW = 2;
+    constexpr int capH = 4;
+    constexpr int segCount = 4;
+
+    lv_obj_t *body = lv_obj_create(parent);
+    disableScroll(body);
+    lv_obj_remove_style_all(body);
+    lv_obj_set_pos(body, x, y);
+    lv_obj_set_size(body, bodyW, bodyH);
+    lv_obj_set_style_radius(body, 1, 0);
+    lv_obj_set_style_bg_opa(body, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(body, 1, 0);
+    lv_obj_set_style_border_color(body, lv_color_hex(kLauncherPrimary), 0);
+
+    lv_obj_t *cap = lv_obj_create(parent);
+    disableScroll(cap);
+    lv_obj_remove_style_all(cap);
+    lv_obj_set_pos(cap, x + bodyW, y + ((bodyH - capH) / 2));
+    lv_obj_set_size(cap, capW, capH);
+    lv_obj_set_style_radius(cap, 1, 0);
+    lv_obj_set_style_bg_opa(cap, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(cap, lv_color_hex(kLauncherPrimary), 0);
+
+    int filled = 0;
+    if (batteryPct >= 0) {
+      filled = (batteryPct + 24) / 25;
+      if (filled < 0) {
+        filled = 0;
+      }
+      if (filled > segCount) {
+        filled = segCount;
+      }
+    }
+
+    const int usableW = bodyW - 4;
+    const int segGap = 1;
+    const int segW = (usableW - ((segCount - 1) * segGap)) / segCount;
+    const int segH = bodyH - 4;
+    for (int i = 0; i < segCount; ++i) {
+      lv_obj_t *seg = lv_obj_create(body);
+      disableScroll(seg);
+      lv_obj_remove_style_all(seg);
+      lv_obj_set_pos(seg, 2 + i * (segW + segGap), 2);
+      lv_obj_set_size(seg, segW, segH);
+      lv_obj_set_style_radius(seg, 1, 0);
+      lv_obj_set_style_bg_opa(seg, LV_OPA_COVER, 0);
+      if (i < filled) {
+        lv_obj_set_style_bg_color(seg, lv_color_hex(kLauncherPrimary), 0);
+      } else {
+        lv_obj_set_style_bg_color(seg, lv_color_hex(kLauncherLine), 0);
+      }
+    }
+  }
+
   void setLabelFont(lv_obj_t *obj) const {
-    lv_obj_set_style_text_font(obj, font(), 0);
-    lv_obj_set_style_text_opa(obj, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_color(obj, lv_color_white(), 0);
+    lv_obj_set_style_text_font(obj, font(), kStyleAny);
+    lv_obj_set_style_text_opa(obj, LV_OPA_COVER, kStyleAny);
+    lv_obj_set_style_text_color(obj, lv_color_white(), kStyleAny);
   }
 
   void disableScroll(lv_obj_t *obj) const {
@@ -217,19 +448,30 @@ class UiRuntime::Impl {
     lv_obj_set_scroll_dir(obj, LV_DIR_NONE);
   }
 
+  void prepareLabel(lv_obj_t *label) const {
+    lv_obj_remove_style_all(label);
+    disableScroll(label);
+    lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_bg_opa(label, LV_OPA_TRANSP, 0);
+  }
+
   void setSingleLineLabel(lv_obj_t *label,
                           int width,
                           lv_text_align_t align = LV_TEXT_ALIGN_LEFT) const {
+    prepareLabel(label);
     setLabelFont(label);
     if (width < 1) {
       width = 1;
     }
     lv_obj_set_width(label, width);
-    lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
-    lv_obj_set_style_text_align(label, align, 0);
+    lv_obj_set_height(label, static_cast<int32_t>(font()->line_height + 2));
+    lv_label_set_long_mode(label, LV_LABEL_LONG_CLIP);
+    lv_obj_set_style_text_align(label, align, kStyleAny);
+    lv_obj_set_style_pad_all(label, 0, kStyleAny);
   }
 
   void setWrapLabel(lv_obj_t *label, int width, int height = -1) const {
+    prepareLabel(label);
     setLabelFont(label);
     if (width < 1) {
       width = 1;
@@ -239,6 +481,8 @@ class UiRuntime::Impl {
       lv_obj_set_height(label, height);
     }
     lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_LEFT, kStyleAny);
+    lv_obj_set_style_pad_all(label, 0, kStyleAny);
   }
 
   void clearProgressHandles() {
@@ -262,98 +506,112 @@ class UiRuntime::Impl {
     clearProgressHandles();
     lv_obj_clean(screen);
     disableScroll(screen);
-    lv_obj_set_style_bg_color(screen, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_text_color(screen, lv_color_white(), 0);
+    lv_obj_set_style_bg_color(screen, lv_color_hex(kClrBg), 0);
+    lv_obj_set_style_text_color(screen, lv_color_hex(kClrTextPrimary), 0);
     lv_obj_set_style_text_opa(screen, LV_OPA_COVER, 0);
     setLabelFont(screen);
 
     const int w = lv_display_get_horizontal_resolution(port.display());
     const int h = lv_display_get_vertical_resolution(port.display());
-    const int innerW = w - (kSidePadding * 2);
+    const int frameX = 4;
+    const int frameW = w - (frameX * 2);
+    const int innerW = frameW - (kSidePadding * 2);
 
     lv_obj_t *header = lv_obj_create(screen);
     disableScroll(header);
     lv_obj_remove_style_all(header);
-    lv_obj_set_pos(header, 0, 0);
-    lv_obj_set_size(header, w, kHeaderHeight);
-    lv_obj_set_style_bg_color(header, lv_color_hex(0x00353F), 0);
+    lv_obj_set_pos(header, frameX, 4);
+    lv_obj_set_size(header, frameW, kHeaderHeight);
+    lv_obj_set_style_radius(header, 8, 0);
+    lv_obj_set_style_bg_color(header, lv_color_hex(kClrPanel), 0);
+    lv_obj_set_style_bg_opa(header, kOpa90, 0);
+    lv_obj_set_style_border_width(header, 1, 0);
+    lv_obj_set_style_border_color(header, lv_color_hex(kClrBorder), 0);
+    lv_obj_set_style_pad_all(header, 0, 0);
 
-    lv_obj_t *timeLabel = lv_label_create(header);
-    int timeWidth = innerW / 3;
-    if (timeWidth < 42) {
-      timeWidth = 42;
+    int timeWidth = 54;
+    if (timeWidth > innerW - 24) {
+      timeWidth = innerW - 24;
     }
-    if (timeWidth > 72) {
-      timeWidth = 72;
+    if (timeWidth < 18) {
+      timeWidth = 18;
     }
-    if (timeWidth > innerW - 28) {
-      timeWidth = innerW - 28;
+    int titleWidth = innerW - timeWidth - 6;
+    if (titleWidth < 20) {
+      titleWidth = innerW;
     }
-    if (timeWidth < 16) {
-      timeWidth = 16;
-    }
-    setSingleLineLabel(timeLabel, timeWidth, LV_TEXT_ALIGN_LEFT);
-    lv_label_set_text(timeLabel, headerTime.length() > 0 ? headerTime.c_str() : "--:--");
-    lv_obj_set_style_text_color(timeLabel, lv_color_white(), 0);
-    lv_obj_set_pos(timeLabel, kSidePadding, 1);
-
-    lv_obj_t *statusLabel = lv_label_create(header);
-    int statusWidth = innerW - timeWidth - 4;
-    if (statusWidth < 12) {
-      statusWidth = 12;
-    }
-    setSingleLineLabel(statusLabel, statusWidth, LV_TEXT_ALIGN_RIGHT);
-    lv_label_set_text(statusLabel, headerStatus.c_str());
-    lv_obj_set_style_text_color(statusLabel, lv_color_white(), 0);
-    lv_obj_set_pos(statusLabel, w - kSidePadding - statusWidth, 1);
 
     lv_obj_t *titleLabel = lv_label_create(header);
-    setSingleLineLabel(titleLabel, innerW, LV_TEXT_ALIGN_LEFT);
+    setSingleLineLabel(titleLabel, titleWidth, LV_TEXT_ALIGN_LEFT);
     lv_label_set_text(titleLabel, title.c_str());
-    lv_obj_set_style_text_color(titleLabel, lv_color_white(), 0);
-    lv_obj_set_pos(titleLabel, kSidePadding, kHeaderHeight - 14);
+    lv_obj_set_style_text_color(titleLabel, lv_color_hex(kClrTextPrimary), 0);
+    lv_obj_set_pos(titleLabel, kSidePadding, 4);
 
-    int y = kHeaderHeight;
+    lv_obj_t *timeLabel = lv_label_create(header);
+    setSingleLineLabel(timeLabel, timeWidth, LV_TEXT_ALIGN_RIGHT);
+    lv_label_set_text(timeLabel, headerTime.length() > 0 ? headerTime.c_str() : "--:--");
+    lv_obj_set_style_text_color(timeLabel, lv_color_hex(kClrTextMuted), 0);
+    lv_obj_set_pos(timeLabel, frameW - kSidePadding - timeWidth, 4);
+
+    int y = 4 + kHeaderHeight + 4;
     if (subtitle.length() > 0) {
       lv_obj_t *sub = lv_obj_create(screen);
       disableScroll(sub);
       lv_obj_remove_style_all(sub);
-      lv_obj_set_pos(sub, 0, y);
-      lv_obj_set_size(sub, w, kSubtitleHeight);
-      lv_obj_set_style_bg_color(sub, lv_color_hex(0x001112), 0);
+      lv_obj_set_pos(sub, frameX, y);
+      lv_obj_set_size(sub, frameW, kSubtitleHeight);
+      lv_obj_set_style_radius(sub, 6, 0);
+      lv_obj_set_style_bg_color(sub, lv_color_hex(kClrPanelSoft), 0);
+      lv_obj_set_style_bg_opa(sub, kOpa85, 0);
+      lv_obj_set_style_border_width(sub, 1, 0);
+      lv_obj_set_style_border_color(sub, lv_color_hex(kClrBorder), 0);
 
       lv_obj_t *subLabel = lv_label_create(sub);
       setSingleLineLabel(subLabel, innerW, LV_TEXT_ALIGN_LEFT);
       lv_label_set_text(subLabel, subtitle.c_str());
-      lv_obj_set_style_text_color(subLabel, lv_color_hex(0x65E7FF), 0);
-      lv_obj_set_pos(subLabel, kSidePadding, 1);
-      y += kSubtitleHeight;
+      lv_obj_set_style_text_color(subLabel, lv_color_hex(kClrTextMuted), 0);
+      int subLabelY = (kSubtitleHeight - static_cast<int>(font()->line_height + 2)) / 2;
+      if (subLabelY < 0) {
+        subLabelY = 0;
+      }
+      lv_obj_set_pos(subLabel, kSidePadding, subLabelY);
+      y += kSubtitleHeight + 4;
     }
 
-    int footerY = h - kFooterHeight;
+    int footerY = h - 6;
+    if (footer.length() > 0) {
+      footerY = h - kFooterHeight - 4;
+      lv_obj_t *foot = lv_obj_create(screen);
+      disableScroll(foot);
+      lv_obj_remove_style_all(foot);
+      lv_obj_set_pos(foot, frameX, footerY);
+      lv_obj_set_size(foot, frameW, kFooterHeight);
+      lv_obj_set_style_radius(foot, 6, 0);
+      lv_obj_set_style_bg_color(foot, lv_color_hex(kClrPanelSoft), 0);
+      lv_obj_set_style_bg_opa(foot, kOpa85, 0);
+      lv_obj_set_style_border_width(foot, 1, 0);
+      lv_obj_set_style_border_color(foot, lv_color_hex(kClrBorder), 0);
 
-    lv_obj_t *foot = lv_obj_create(screen);
-    disableScroll(foot);
-    lv_obj_remove_style_all(foot);
-    lv_obj_set_pos(foot, 0, h - kFooterHeight);
-    lv_obj_set_size(foot, w, kFooterHeight);
-    lv_obj_set_style_bg_color(foot, lv_color_hex(0x001E5C), 0);
-
-    lv_obj_t *footLabel = lv_label_create(foot);
-    setSingleLineLabel(footLabel, innerW, LV_TEXT_ALIGN_LEFT);
-    lv_label_set_text(footLabel, footer.c_str());
-    lv_obj_set_style_text_color(footLabel, lv_color_white(), 0);
-    lv_obj_set_pos(footLabel, kSidePadding, 0);
+      lv_obj_t *footLabel = lv_label_create(foot);
+      setSingleLineLabel(footLabel, innerW, LV_TEXT_ALIGN_CENTER);
+      lv_label_set_text(footLabel, footer.c_str());
+      lv_obj_set_style_text_color(footLabel, lv_color_hex(kClrTextMuted), 0);
+      int footLabelY = (kFooterHeight - static_cast<int>(font()->line_height + 2)) / 2;
+      if (footLabelY < 0) {
+        footLabelY = 0;
+      }
+      lv_obj_set_pos(footLabel, kSidePadding, footLabelY);
+    }
 
     contentTop = y + 2;
-    contentBottom = footerY - 2;
-    if (contentBottom > h - kFooterHeight - 2) {
-      contentBottom = h - kFooterHeight - 2;
+    contentBottom = footer.length() > 0 ? (footerY - 4) : (h - 6);
+    if (contentBottom > h - 6) {
+      contentBottom = h - 6;
     }
     if (contentBottom < contentTop + kMinContentHeight) {
       contentBottom = contentTop + kMinContentHeight;
-      if (contentBottom > h - kFooterHeight - 2) {
-        contentBottom = h - kFooterHeight - 2;
+      if (contentBottom > h - 6) {
+        contentBottom = h - 6;
       }
     }
     if (contentBottom < contentTop) {
@@ -379,8 +637,8 @@ class UiRuntime::Impl {
     if (usableHeight < rowHeight) {
       rowHeight = usableHeight;
     }
-    if (rowHeight < 14 && usableHeight >= 14) {
-      rowHeight = 14;
+    if (rowHeight < 18 && usableHeight >= 18) {
+      rowHeight = 18;
     }
 
     int maxRows = usableHeight / rowHeight;
@@ -408,27 +666,46 @@ class UiRuntime::Impl {
 
       lv_obj_t *btn = lv_obj_create(lv_screen_active());
       disableScroll(btn);
-      lv_obj_set_pos(btn, 2, y);
-      lv_obj_set_size(btn, w - 4, rowHeight - 1);
-      lv_obj_set_style_radius(btn, 0, 0);
-      lv_obj_set_style_border_width(btn, 0, 0);
+      lv_obj_remove_style_all(btn);
+      const int btnW = w - 20;
+      int btnH = rowHeight - 2;
+      if (btnH < 1) {
+        btnH = 1;
+      }
+      lv_obj_set_pos(btn, 10, y);
+      lv_obj_set_size(btn, btnW, btnH);
+      lv_obj_set_style_radius(btn, 8, kStyleAny);
+      lv_obj_set_style_border_width(btn, 1, kStyleAny);
+      lv_obj_set_style_pad_all(btn, 0, kStyleAny);
+      lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, kStyleAny);
 
       const bool isSelected = index == selected;
       lv_obj_set_style_bg_color(btn,
-                                isSelected ? lv_color_hex(0xFFCC33) : lv_color_hex(0x000000),
-                                0);
+                                isSelected ? lv_color_hex(kClrAccentSoft) : lv_color_hex(kClrPanel),
+                                kStyleAny);
+      lv_obj_set_style_border_color(btn,
+                                    isSelected ? lv_color_hex(kClrAccent) : lv_color_hex(kClrBorder),
+                                kStyleAny);
 
       lv_obj_t *label = lv_label_create(btn);
-      setSingleLineLabel(label, w - 14, LV_TEXT_ALIGN_LEFT);
+      setSingleLineLabel(label, btnW - 14, LV_TEXT_ALIGN_LEFT);
       lv_label_set_text(label, items[static_cast<size_t>(index)].c_str());
       lv_obj_set_style_text_color(label,
-                                  isSelected ? lv_color_hex(0x000000) : lv_color_white(),
-                                  0);
-      int labelY = (rowHeight - 16) / 2;
-      if (labelY < 0) {
-        labelY = 0;
+                                  isSelected ? lv_color_hex(kClrTextPrimary)
+                                             : lv_color_hex(kClrTextPrimary),
+                                  kStyleAny);
+      lv_obj_align(label, LV_ALIGN_LEFT_MID, 10, 0);
+
+      if (isSelected) {
+        lv_obj_t *marker = lv_obj_create(btn);
+        disableScroll(marker);
+        lv_obj_remove_style_all(marker);
+        lv_obj_set_size(marker, 3, btnH - 8);
+        lv_obj_set_pos(marker, 4, 4);
+        lv_obj_set_style_radius(marker, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(marker, lv_color_hex(kClrAccent), 0);
+        lv_obj_set_style_bg_opa(marker, LV_OPA_COVER, 0);
       }
-      lv_obj_set_pos(label, 4, labelY);
     }
 
     service(nullptr);
@@ -438,168 +715,170 @@ class UiRuntime::Impl {
                       const std::vector<String> &items,
                       int selected) {
     updateHeaderIndicators();
+    updateSdPercent();
 
     lv_obj_t *screen = lv_screen_active();
     clearProgressHandles();
     lv_obj_clean(screen);
     disableScroll(screen);
-    lv_obj_set_style_bg_color(screen, lv_color_hex(0x070B16), 0);
-    lv_obj_set_style_text_color(screen, lv_color_white(), 0);
+    lv_obj_set_style_bg_color(screen, lv_color_hex(kLauncherBg), 0);
+    lv_obj_set_style_text_color(screen, lv_color_hex(kLauncherPrimary), 0);
     lv_obj_set_style_text_opa(screen, LV_OPA_COVER, 0);
     setLabelFont(screen);
 
     const int w = lv_display_get_horizontal_resolution(port.display());
     const int h = lv_display_get_vertical_resolution(port.display());
-
-    lv_obj_t *ambientTop = lv_obj_create(screen);
-    disableScroll(ambientTop);
-    lv_obj_remove_style_all(ambientTop);
-    lv_obj_set_pos(ambientTop, -12, 0);
-    lv_obj_set_size(ambientTop, w + 24, h / 2);
-    lv_obj_set_style_bg_color(ambientTop, lv_color_hex(0x13254B), 0);
-    lv_obj_set_style_bg_opa(ambientTop, LV_OPA_30, 0);
-
-    lv_obj_t *ambientBottom = lv_obj_create(screen);
-    disableScroll(ambientBottom);
-    lv_obj_remove_style_all(ambientBottom);
-    lv_obj_set_pos(ambientBottom, 0, h / 2);
-    lv_obj_set_size(ambientBottom, w, h / 2);
-    lv_obj_set_style_bg_color(ambientBottom, lv_color_hex(0x04070C), 0);
-    lv_obj_set_style_bg_opa(ambientBottom, LV_OPA_COVER, 0);
-
-    lv_obj_t *titleLabel = lv_label_create(screen);
-    int timeWidth = w / 3;
-    if (timeWidth < 44) {
-      timeWidth = 44;
+    const int count = static_cast<int>(items.size());
+    if (count <= 0) {
+      lv_obj_t *emptyLabel = lv_label_create(screen);
+      setSingleLineLabel(emptyLabel, w - 12, LV_TEXT_ALIGN_CENTER);
+      lv_label_set_text(emptyLabel, "No apps");
+      lv_obj_set_style_text_color(emptyLabel, lv_color_hex(kLauncherMuted), 0);
+      lv_obj_align(emptyLabel, LV_ALIGN_CENTER, 0, 0);
+      service(nullptr);
+      return;
     }
-    if (timeWidth > 70) {
-      timeWidth = 70;
-    }
-    if (timeWidth > w - 48) {
-      timeWidth = w - 48;
-    }
-    if (timeWidth < 16) {
-      timeWidth = 16;
-    }
-    int titleWidth = w - 18 - timeWidth;
-    if (titleWidth < 20) {
-      titleWidth = w - 16;
-    }
-    setSingleLineLabel(titleLabel, titleWidth, LV_TEXT_ALIGN_LEFT);
-    lv_label_set_text(titleLabel, title.c_str());
-    lv_obj_set_style_text_color(titleLabel, lv_color_hex(0xA8CBFF), 0);
-    lv_obj_set_pos(titleLabel, 8, 4);
 
-    lv_obj_t *timeLabel = lv_label_create(screen);
-    setSingleLineLabel(timeLabel, timeWidth, LV_TEXT_ALIGN_RIGHT);
-    lv_label_set_text(timeLabel, headerTime.length() > 0 ? headerTime.c_str() : "--:--");
-    lv_obj_set_style_text_color(timeLabel, lv_color_hex(0xE8F1FF), 0);
-    lv_obj_set_pos(timeLabel, w - timeWidth - 8, 4);
+    const int safeSelected = wrapIndex(selected, count);
+    const int prevIndex = wrapIndex(safeSelected - 1, count);
+    const int nextIndex = wrapIndex(safeSelected + 1, count);
 
-    lv_obj_t *hero = lv_obj_create(screen);
-    disableScroll(hero);
-    const int heroX = 8;
-    const int heroY = 22;
-    const int heroW = w - 16;
-    int heroH = (h >= 190) ? 68 : 56;
-    if (heroY + heroH > h - 62) {
-      heroH = h - 62 - heroY;
-      if (heroH < 40) {
-        heroH = 40;
+    const int topX = 4;
+    const int topY = 4;
+    const int topW = w - (topX * 2);
+    const int topH = kHeaderHeight;
+
+    lv_obj_t *topBar = lv_obj_create(screen);
+    disableScroll(topBar);
+    lv_obj_remove_style_all(topBar);
+    lv_obj_set_pos(topBar, topX, topY);
+    lv_obj_set_size(topBar, topW, topH);
+    lv_obj_set_style_radius(topBar, 8, 0);
+    lv_obj_set_style_bg_color(topBar, lv_color_hex(kLauncherBg), 0);
+    lv_obj_set_style_bg_opa(topBar, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(topBar, 1, 0);
+    lv_obj_set_style_border_color(topBar, lv_color_hex(kLauncherLine), 0);
+
+    constexpr int kBatteryBodyW = 18;
+    constexpr int kBatteryCapW = 2;
+    constexpr int kBatteryIconW = kBatteryBodyW + kBatteryCapW;
+    constexpr int kBatteryIconH = 9;
+    const int batteryX = topW - kSidePadding - kBatteryIconW;
+    const int batteryY = (topH - kBatteryIconH) / 2;
+    const int sdLabelW = 56;
+    const int sdBatteryGap = 12;
+    const int sdX = batteryX - sdBatteryGap - sdLabelW;
+    const int titleX = kSidePadding;
+    int titleW = sdX - titleX - 6;
+    if (titleW < 16) {
+      titleW = 16;
+    }
+    int labelY = (topH - static_cast<int>(font()->line_height + 2)) / 2;
+    if (labelY < 0) {
+      labelY = 0;
+    }
+    lv_obj_t *titleLabel = lv_label_create(topBar);
+    setSingleLineLabel(titleLabel, titleW > 10 ? titleW : 10, LV_TEXT_ALIGN_LEFT);
+    lv_label_set_text(titleLabel, ellipsize(title, 18).c_str());
+    lv_obj_set_style_text_color(titleLabel, lv_color_hex(kLauncherPrimary), 0);
+    lv_obj_set_pos(titleLabel, titleX, labelY);
+
+    String sdText = "SD ";
+    if (sdPct >= 0) {
+      sdText += String(sdPct);
+      sdText += "%";
+    } else {
+      sdText += "--%";
+    }
+
+    lv_obj_t *sdLabel = lv_label_create(topBar);
+    setSingleLineLabel(sdLabel, sdLabelW, LV_TEXT_ALIGN_RIGHT);
+    lv_label_set_text(sdLabel, sdText.c_str());
+    lv_obj_set_style_text_color(sdLabel, lv_color_hex(kLauncherPrimary), 0);
+    lv_obj_set_pos(sdLabel, sdX, labelY);
+
+    drawBatteryIcon(topBar, batteryX, batteryY);
+
+    const String selectedName = ellipsize(items[static_cast<size_t>(safeSelected)], 18);
+    const String prevName = ellipsize(items[static_cast<size_t>(prevIndex)], 10);
+    const String nextName = ellipsize(items[static_cast<size_t>(nextIndex)], 10);
+
+    constexpr int kMainIconOffsetY = -6;
+    constexpr int kMainIconBaseH = 46;
+    constexpr int kMainIconScale = 384;  // 1.5x (256 == 1.0x)
+    bool iconDrawn = launcherIconsAvailable && launcherIconsReady();
+    if (iconDrawn) {
+      const LauncherIconId selectedIcon = iconIdFromLauncherIndex(safeSelected);
+      const LauncherIconId prevIcon = iconIdFromLauncherIndex(prevIndex);
+      const LauncherIconId nextIcon = iconIdFromLauncherIndex(nextIndex);
+
+      const lv_image_dsc_t *mainIcon = getLauncherIcon(selectedIcon, LauncherIconVariant::Main);
+      const lv_image_dsc_t *leftIcon = getLauncherIcon(prevIcon, LauncherIconVariant::Side);
+      const lv_image_dsc_t *rightIcon = getLauncherIcon(nextIcon, LauncherIconVariant::Side);
+      if (!mainIcon || !leftIcon || !rightIcon) {
+        iconDrawn = false;
+      } else {
+        lv_obj_t *centerImg = lv_image_create(screen);
+        disableScroll(centerImg);
+        lv_obj_set_style_bg_opa(centerImg, LV_OPA_TRANSP, 0);
+        lv_image_set_src(centerImg, mainIcon);
+        lv_obj_set_style_image_recolor(centerImg, lv_color_hex(kLauncherPrimary), 0);
+        lv_obj_set_style_image_recolor_opa(centerImg, LV_OPA_COVER, 0);
+        lv_image_set_scale(centerImg, kMainIconScale);
+        lv_obj_align(centerImg, LV_ALIGN_CENTER, 0, kMainIconOffsetY);
+
+        lv_obj_t *leftImg = lv_image_create(screen);
+        disableScroll(leftImg);
+        lv_obj_set_style_bg_opa(leftImg, LV_OPA_TRANSP, 0);
+        lv_image_set_src(leftImg, leftIcon);
+        lv_obj_set_style_image_recolor(leftImg, lv_color_hex(kLauncherSide), 0);
+        lv_obj_set_style_image_recolor_opa(leftImg, LV_OPA_COVER, 0);
+        lv_image_set_scale(leftImg, kMainIconScale);
+        lv_obj_align(leftImg, LV_ALIGN_CENTER, -92, kMainIconOffsetY);
+
+        lv_obj_t *rightImg = lv_image_create(screen);
+        disableScroll(rightImg);
+        lv_obj_set_style_bg_opa(rightImg, LV_OPA_TRANSP, 0);
+        lv_image_set_src(rightImg, rightIcon);
+        lv_obj_set_style_image_recolor(rightImg, lv_color_hex(kLauncherSide), 0);
+        lv_obj_set_style_image_recolor_opa(rightImg, LV_OPA_COVER, 0);
+        lv_image_set_scale(rightImg, kMainIconScale);
+        lv_obj_align(rightImg, LV_ALIGN_CENTER, 92, kMainIconOffsetY);
       }
     }
 
-    lv_obj_set_pos(hero, heroX, heroY);
-    lv_obj_set_size(hero, heroW, heroH);
-    lv_obj_set_style_bg_color(hero, lv_color_hex(0x0E1629), 0);
-    lv_obj_set_style_bg_opa(hero, LV_OPA_90, 0);
-    lv_obj_set_style_border_color(hero, lv_color_hex(0x2B4E8C), 0);
-    lv_obj_set_style_border_width(hero, 1, 0);
-    lv_obj_set_style_radius(hero, 10, 0);
+    if (!iconDrawn) {
+      lv_obj_t *fallback = lv_label_create(screen);
+      setSingleLineLabel(fallback, w - 16, LV_TEXT_ALIGN_CENTER);
+      lv_label_set_text(fallback, selectedName.c_str());
+      lv_obj_set_style_text_color(fallback, lv_color_hex(kLauncherPrimary), 0);
+      lv_obj_align(fallback, LV_ALIGN_CENTER, 0, -6);
 
-    const String selectedName = items[static_cast<size_t>(selected)];
-    lv_obj_t *selectedLabel = lv_label_create(hero);
-    setLabelFont(selectedLabel);
-    lv_obj_set_width(selectedLabel, heroW - 20);
-    lv_label_set_long_mode(selectedLabel, LV_LABEL_LONG_DOT);
-    lv_label_set_text(selectedLabel, selectedName.c_str());
-    lv_obj_set_style_text_color(selectedLabel, lv_color_white(), 0);
-    lv_obj_align(selectedLabel, LV_ALIGN_LEFT_MID, 10, -8);
-
-    lv_obj_t *heroHint = lv_label_create(hero);
-    setSingleLineLabel(heroHint, heroW - 20, LV_TEXT_ALIGN_LEFT);
-    lv_label_set_text(heroHint, "Press OK to Open");
-    lv_obj_set_style_text_color(heroHint, lv_color_hex(0x7BD6FF), 0);
-    lv_obj_set_pos(heroHint, 10, heroH - 18);
-
-    static const uint32_t kCardPalette[] = {
-        0x3764D5, 0x3E8A2E, 0x8A3FC8, 0xD05E1A, 0x287A9F, 0xA13F5F, 0x6D6D20, 0x5A4EC9};
-    constexpr int kPaletteCount =
-        static_cast<int>(sizeof(kCardPalette) / sizeof(kCardPalette[0]));
-
-    const int cardW = (w >= 280) ? 72 : 64;
-    int cardH = (h >= 180) ? 46 : 40;
-    const int cardGap = 12;
-    const int cardStep = cardW + cardGap;
-
-    const int footerY = h - 16;
-    const int cardsTop = heroY + heroH + 10;
-    int cardsBottom = footerY - 6;
-    if (cardsBottom <= cardsTop) {
-      cardsBottom = cardsTop + 1;
-    }
-    if (cardsBottom - cardsTop < cardH) {
-      cardH = cardsBottom - cardsTop;
-    }
-    if (cardH < 20) {
-      cardH = 20;
-    }
-    int stripY = cardsTop + ((cardsBottom - cardsTop - cardH) / 2);
-    if (stripY < cardsTop) {
-      stripY = cardsTop;
+      lv_obj_t *sideNames = lv_label_create(screen);
+      setSingleLineLabel(sideNames, w - 16, LV_TEXT_ALIGN_CENTER);
+      lv_label_set_text(sideNames, (prevName + "   |   " + nextName).c_str());
+      lv_obj_set_style_text_color(sideNames, lv_color_hex(kLauncherMuted), 0);
+      lv_obj_align(sideNames, LV_ALIGN_CENTER, 0, 16);
     }
 
-    const int centerX = w / 2;
-    for (int i = 0; i < static_cast<int>(items.size()); ++i) {
-      const bool isSelected = i == selected;
-      const int rel = i - selected;
-
-      const int x = centerX + rel * cardStep - (cardW / 2);
-      int y = stripY;
-      if (isSelected && y > cardsTop) {
-        y -= 2;
-      }
-      if (x > w + 8 || x + cardW < -8) {
-        continue;
-      }
-
-      lv_obj_t *card = lv_obj_create(screen);
-      disableScroll(card);
-      lv_obj_set_pos(card, x, y);
-      lv_obj_set_size(card, cardW, cardH);
-      lv_obj_set_style_radius(card, 12, 0);
-      lv_obj_set_style_border_width(card, isSelected ? 2 : 1, 0);
-      lv_obj_set_style_border_color(card,
-                                    isSelected ? lv_color_hex(0xFFE08A) : lv_color_hex(0x243756),
-                                    0);
-      lv_obj_set_style_bg_color(card, lv_color_hex(kCardPalette[i % kPaletteCount]), 0);
-      lv_obj_set_style_bg_opa(card, isSelected ? LV_OPA_COVER : LV_OPA_70, 0);
-
-      lv_obj_t *cardLabel = lv_label_create(card);
-      setLabelFont(cardLabel);
-      lv_obj_set_width(cardLabel, cardW - 8);
-      lv_label_set_long_mode(cardLabel, LV_LABEL_LONG_DOT);
-      lv_label_set_text(cardLabel, items[static_cast<size_t>(i)].c_str());
-      lv_obj_set_style_text_align(cardLabel, LV_TEXT_ALIGN_CENTER, 0);
-      lv_obj_set_style_text_color(cardLabel, lv_color_white(), 0);
-      lv_obj_center(cardLabel);
+    lv_obj_t *nameLabel = lv_label_create(screen);
+    prepareLabel(nameLabel);
+    setLabelFont(nameLabel);
+    lv_label_set_long_mode(nameLabel, LV_LABEL_LONG_CLIP);
+    lv_obj_set_width(nameLabel, LV_SIZE_CONTENT);
+    lv_obj_set_height(nameLabel, static_cast<int32_t>(font()->line_height + 2));
+    lv_label_set_text(nameLabel, selectedName.c_str());
+    lv_obj_set_style_text_color(nameLabel, lv_color_hex(kLauncherMuted), 0);
+    int nameY = (h / 2) + 42;
+    if (iconDrawn) {
+      const int scaledMainIconH = (kMainIconBaseH * kMainIconScale + 128) / 256;
+      const int iconBottom = (h / 2) + kMainIconOffsetY + (scaledMainIconH / 2);
+      nameY = iconBottom + 4;
     }
-
-    lv_obj_t *footerHint = lv_label_create(screen);
-    setSingleLineLabel(footerHint, w - 12, LV_TEXT_ALIGN_LEFT);
-    lv_label_set_text(footerHint, "ROT Select  OK Open  BACK Exit");
-    lv_obj_set_style_text_color(footerHint, lv_color_hex(0x7D95B8), 0);
-    lv_obj_set_pos(footerHint, 6, h - 16);
+    if (nameY > h - 16) {
+      nameY = h - 16;
+    }
+    lv_obj_align(nameLabel, LV_ALIGN_TOP_MID, 0, nameY);
 
     service(nullptr);
   }
@@ -621,8 +900,8 @@ class UiRuntime::Impl {
     if (usableHeight < rowHeight) {
       rowHeight = usableHeight;
     }
-    if (rowHeight < 14 && usableHeight >= 14) {
-      rowHeight = 14;
+    if (rowHeight < 18 && usableHeight >= 18) {
+      rowHeight = 18;
     }
 
     int maxRows = usableHeight / rowHeight;
@@ -639,21 +918,26 @@ class UiRuntime::Impl {
 
       lv_obj_t *holder = lv_obj_create(lv_screen_active());
       disableScroll(holder);
-      lv_obj_set_pos(holder, 2, y);
-      lv_obj_set_size(holder, w - 4, rowHeight - 1);
-      lv_obj_set_style_bg_color(holder, lv_color_hex(0x000000), 0);
-      lv_obj_set_style_border_width(holder, 0, 0);
-      lv_obj_set_style_radius(holder, 0, 0);
+      lv_obj_remove_style_all(holder);
+      const int holderW = w - 20;
+      int holderH = rowHeight - 1;
+      if (holderH < 1) {
+        holderH = 1;
+      }
+      lv_obj_set_pos(holder, 10, y);
+      lv_obj_set_size(holder, holderW, holderH);
+      lv_obj_set_style_bg_color(holder, lv_color_hex(kClrPanel), kStyleAny);
+      lv_obj_set_style_bg_opa(holder, kOpa92, kStyleAny);
+      lv_obj_set_style_border_width(holder, 1, kStyleAny);
+      lv_obj_set_style_border_color(holder, lv_color_hex(kClrBorder), kStyleAny);
+      lv_obj_set_style_radius(holder, 8, kStyleAny);
+      lv_obj_set_style_pad_all(holder, 0, kStyleAny);
 
       lv_obj_t *label = lv_label_create(holder);
-      setSingleLineLabel(label, w - 14, LV_TEXT_ALIGN_LEFT);
+      setSingleLineLabel(label, holderW - 14, LV_TEXT_ALIGN_LEFT);
       lv_label_set_text(label, lines[static_cast<size_t>(lineIndex)].c_str());
-      lv_obj_set_style_text_color(label, lv_color_white(), 0);
-      int labelY = (rowHeight - 16) / 2;
-      if (labelY < 0) {
-        labelY = 0;
-      }
-      lv_obj_set_pos(label, 4, labelY);
+      lv_obj_set_style_text_color(label, lv_color_hex(kClrTextPrimary), kStyleAny);
+      lv_obj_align(label, LV_ALIGN_LEFT_MID, 10, 0);
     }
 
     service(nullptr);
@@ -674,6 +958,7 @@ class UiRuntime::Impl {
 
     lv_obj_t *box = lv_obj_create(lv_screen_active());
     disableScroll(box);
+    lv_obj_remove_style_all(box);
     int boxW = w - 16;
     if (boxW < 80) {
       boxW = w - 4;
@@ -685,13 +970,17 @@ class UiRuntime::Impl {
     int boxY = contentTop + (areaH - boxH) / 2;
     lv_obj_set_size(box, boxW, boxH);
     lv_obj_set_pos(box, (w - boxW) / 2, boxY);
-    lv_obj_set_style_bg_color(box, lv_color_hex(0x111111), 0);
-    lv_obj_set_style_border_color(box, lv_color_hex(0x2E6BF0), 0);
+    lv_obj_set_style_bg_color(box, lv_color_hex(kClrPanel), kStyleAny);
+    lv_obj_set_style_bg_opa(box, LV_OPA_COVER, kStyleAny);
+    lv_obj_set_style_border_color(box, lv_color_hex(kClrAccent), kStyleAny);
+    lv_obj_set_style_border_width(box, 1, kStyleAny);
+    lv_obj_set_style_radius(box, 10, kStyleAny);
+    lv_obj_set_style_pad_all(box, 6, kStyleAny);
 
     lv_obj_t *label = lv_label_create(box);
-    setWrapLabel(label, boxW - 14, boxH - 10);
+    setWrapLabel(label, boxW - 18, boxH - 14);
     lv_label_set_text(label, message.c_str());
-    lv_obj_set_style_text_color(label, lv_color_white(), 0);
+    lv_obj_set_style_text_color(label, lv_color_hex(kClrTextPrimary), 0);
     lv_obj_center(label);
 
     service(nullptr);
@@ -707,7 +996,7 @@ class UiRuntime::Impl {
     int contentBottom = 0;
     renderBase(title,
                preview,
-               "ROT Move  OK Key  BACK Cancel",
+               "ROTATE Move   OK Type   BACK",
                contentTop,
                contentBottom);
 
@@ -716,6 +1005,7 @@ class UiRuntime::Impl {
       const lv_area_t &a = areas[i];
       lv_obj_t *btn = lv_button_create(lv_screen_active());
       disableScroll(btn);
+      lv_obj_remove_style_all(btn);
       lv_obj_set_pos(btn, a.x1, a.y1);
       lv_obj_set_size(btn,
                       static_cast<int32_t>(a.x2 - a.x1 + 1),
@@ -724,28 +1014,33 @@ class UiRuntime::Impl {
       bool isSelected = selected == static_cast<int>(i);
       bool isCapsActive = selectedCapsIndex == static_cast<int>(i);
 
-      lv_color_t bg = lv_color_hex(0x3C3C3C);
-      lv_color_t fg = lv_color_white();
+      lv_color_t bg = lv_color_hex(kClrPanel);
+      lv_color_t fg = lv_color_hex(kClrTextPrimary);
 
       if (isCapsActive) {
-        bg = lv_color_hex(0x4FB7FF);
-        fg = lv_color_black();
+        bg = lv_color_hex(0x2A4F8C);
+        fg = lv_color_hex(kClrTextPrimary);
       }
       if (isSelected) {
-        bg = lv_color_hex(0xFFCC33);
-        fg = lv_color_black();
+        bg = lv_color_hex(kClrAccentSoft);
+        fg = lv_color_hex(kClrTextPrimary);
       }
 
-      lv_obj_set_style_bg_color(btn, bg, 0);
-      lv_obj_set_style_border_width(btn, 1, 0);
-      lv_obj_set_style_border_color(btn, lv_color_hex(0x000000), 0);
+      lv_obj_set_style_bg_color(btn, bg, kStyleAny);
+      lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, kStyleAny);
+      lv_obj_set_style_border_width(btn, 1, kStyleAny);
+      lv_obj_set_style_border_color(btn,
+                                    isSelected ? lv_color_hex(kClrAccent) : lv_color_hex(kClrBorder),
+                                    kStyleAny);
+      lv_obj_set_style_radius(btn, 4, kStyleAny);
+      lv_obj_set_style_pad_all(btn, 0, kStyleAny);
 
       lv_obj_t *label = lv_label_create(btn);
       setSingleLineLabel(label,
                          static_cast<int>(a.x2 - a.x1),
                          LV_TEXT_ALIGN_CENTER);
       lv_label_set_text(label, keyLabels[i].c_str());
-      lv_obj_set_style_text_color(label, fg, 0);
+      lv_obj_set_style_text_color(label, fg, kStyleAny);
       lv_obj_center(label);
     }
 
@@ -809,17 +1104,20 @@ class UiRuntime::Impl {
       disableScroll(progressOverlay);
       lv_obj_remove_style_all(progressOverlay);
       lv_obj_set_style_bg_color(progressOverlay, lv_color_black(), 0);
-      lv_obj_set_style_bg_opa(progressOverlay, LV_OPA_70, 0);
+      lv_obj_set_style_bg_opa(progressOverlay, kOpa75, 0);
       lv_obj_set_style_border_width(progressOverlay, 0, 0);
       lv_obj_set_style_radius(progressOverlay, 0, 0);
       lv_obj_move_foreground(progressOverlay);
 
       progressPanel = lv_obj_create(progressOverlay);
       disableScroll(progressPanel);
-      lv_obj_set_style_bg_color(progressPanel, lv_color_hex(0x121212), 0);
-      lv_obj_set_style_border_color(progressPanel, lv_color_hex(0x2E6BF0), 0);
-      lv_obj_set_style_border_width(progressPanel, 1, 0);
-      lv_obj_set_style_radius(progressPanel, 6, 0);
+      lv_obj_remove_style_all(progressPanel);
+      lv_obj_set_style_bg_color(progressPanel, lv_color_hex(kClrPanel), kStyleAny);
+      lv_obj_set_style_bg_opa(progressPanel, LV_OPA_COVER, kStyleAny);
+      lv_obj_set_style_border_color(progressPanel, lv_color_hex(kClrAccent), kStyleAny);
+      lv_obj_set_style_border_width(progressPanel, 1, kStyleAny);
+      lv_obj_set_style_radius(progressPanel, 10, kStyleAny);
+      lv_obj_set_style_pad_all(progressPanel, 0, kStyleAny);
 
       progressTitle = lv_label_create(progressPanel);
       setSingleLineLabel(progressTitle, panelW - 56, LV_TEXT_ALIGN_LEFT);
@@ -833,8 +1131,8 @@ class UiRuntime::Impl {
 
       progressBar = lv_bar_create(progressPanel);
       lv_bar_set_range(progressBar, 0, 100);
-      lv_obj_set_style_bg_color(progressBar, lv_color_hex(0x2A2A2A), 0);
-      lv_obj_set_style_bg_color(progressBar, lv_color_hex(0x4FB7FF), LV_PART_INDICATOR);
+      lv_obj_set_style_bg_color(progressBar, lv_color_hex(kClrPanelSoft), 0);
+      lv_obj_set_style_bg_color(progressBar, lv_color_hex(kClrAccent), LV_PART_INDICATOR);
 
       progressPercent = lv_label_create(progressPanel);
       setSingleLineLabel(progressPercent, 44, LV_TEXT_ALIGN_RIGHT);
@@ -922,7 +1220,7 @@ void UiRuntime::begin() {
   impl_->renderBase("Boot", "", "", contentTop, contentBottom);
 
   lv_obj_t *label = lv_label_create(lv_screen_active());
-  impl_->setLabelFont(label);
+  impl_->setSingleLineLabel(label, 120, LV_TEXT_ALIGN_CENTER);
   lv_label_set_text(label, "Booting...");
   lv_obj_set_style_text_color(label, lv_color_white(), 0);
   lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
@@ -950,6 +1248,18 @@ void UiRuntime::setLanguage(UiLanguage language) {
 
 UiLanguage UiRuntime::language() const {
   return impl_->language;
+}
+
+void UiRuntime::setTimezone(const String &tz) {
+  impl_->setTimezone(tz);
+}
+
+String UiRuntime::timezone() const {
+  return impl_->timezone();
+}
+
+bool UiRuntime::syncTimezoneFromIp(String *resolvedTz, String *error) {
+  return impl_->syncTimezoneFromIp(resolvedTz, error);
 }
 
 int UiRuntime::launcherLoop(const String &title,
@@ -1088,7 +1398,7 @@ bool UiRuntime::confirm(const String &title,
                                 options,
                                 1,
                                 backgroundTick,
-                                "OK Select  BACK Cancel",
+                                "OK   BACK",
                                 message);
   return selected == 0;
 }

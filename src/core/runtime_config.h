@@ -26,6 +26,7 @@ struct RuntimeConfig {
   String appMarketGithubRepo;
   String appMarketReleaseAsset;
   String uiLanguage = "en";
+  String timezoneTz = "UTC0";
 };
 
 enum class ConfigLoadSource : uint8_t {

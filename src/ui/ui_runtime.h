@@ -26,6 +26,10 @@ class UiRuntime {
   void setLanguage(UiLanguage language);
   UiLanguage language() const;
 
+  void setTimezone(const String &tz);
+  String timezone() const;
+  bool syncTimezoneFromIp(String *resolvedTz = nullptr, String *error = nullptr);
+
   int launcherLoop(const String &title,
                    const std::vector<String> &items,
                    int selectedIndex,

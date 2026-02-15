@@ -441,7 +441,17 @@ void runSystemMenu(AppContext &ctx,
   while (true) {
     std::vector<String> menu;
     const UiLanguage currentLang = uiLanguageFromConfigCode(ctx.config.uiLanguage);
+    String tzLabel = ctx.config.timezoneTz;
+    tzLabel.trim();
+    if (tzLabel.isEmpty()) {
+      tzLabel = ctx.uiRuntime->timezone();
+    }
+    if (tzLabel.length() > 16) {
+      tzLabel = tzLabel.substring(0, 13) + "...";
+    }
     menu.push_back(String("UI Language: ") + uiLanguageLabel(currentLang));
+    menu.push_back(String("Timezone: ") + tzLabel);
+    menu.push_back("Sync Timezone (IP)");
     menu.push_back("Factory Reset");
     menu.push_back("Back");
 
@@ -451,7 +461,7 @@ void runSystemMenu(AppContext &ctx,
                                         backgroundTick,
                                         "OK Select  BACK Exit",
                                         "Runtime config control");
-    if (choice < 0 || choice == 2) {
+    if (choice < 0 || choice == 4) {
       return;
     }
 
@@ -473,6 +483,62 @@ void runSystemMenu(AppContext &ctx,
         ctx.uiRuntime->setLanguage(nextLang);
         markDirty(ctx);
         saveSettingsConfig(ctx, backgroundTick, "System");
+      }
+      continue;
+    }
+
+    if (choice == 1) {
+      String tzInput = ctx.config.timezoneTz;
+      tzInput.trim();
+      if (tzInput.isEmpty()) {
+        tzInput = ctx.uiRuntime->timezone();
+      }
+
+      if (!ctx.uiRuntime->textInput("Timezone TZ", tzInput, false, backgroundTick)) {
+        continue;
+      }
+
+      tzInput.trim();
+      if (tzInput.isEmpty()) {
+        ctx.uiRuntime->showToast("System", "Timezone cannot be empty", 1400, backgroundTick);
+        continue;
+      }
+
+      ctx.config.timezoneTz = tzInput;
+      ctx.uiRuntime->setTimezone(tzInput);
+      markDirty(ctx);
+      saveSettingsConfig(ctx, backgroundTick, "System");
+      continue;
+    }
+
+    if (choice == 2) {
+      if (!ctx.wifi->isConnected()) {
+        ctx.uiRuntime->showToast("System", "Wi-Fi required for IP timezone", 1600, backgroundTick);
+        continue;
+      }
+
+      ctx.uiRuntime->showProgressOverlay("System", "Resolving timezone via IP...", -1);
+      String resolvedTz;
+      String syncErr;
+      const bool synced = ctx.uiRuntime->syncTimezoneFromIp(&resolvedTz, &syncErr);
+      ctx.uiRuntime->hideProgressOverlay();
+
+      if (!synced) {
+        if (syncErr.isEmpty()) {
+          syncErr = "Failed to resolve timezone from IP";
+        }
+        ctx.uiRuntime->showToast("System", syncErr, 1700, backgroundTick);
+        continue;
+      }
+
+      ctx.config.timezoneTz = resolvedTz;
+      ctx.uiRuntime->setTimezone(resolvedTz);
+      markDirty(ctx);
+      if (saveSettingsConfig(ctx, backgroundTick, "System")) {
+        ctx.uiRuntime->showToast("System",
+                                 "Timezone synced: " + resolvedTz,
+                                 1600,
+                                 backgroundTick);
       }
       continue;
     }
@@ -512,6 +578,7 @@ void runSystemMenu(AppContext &ctx,
     ctx.ble->configure(ctx.config);
 
     ctx.uiRuntime->setLanguage(uiLanguageFromConfigCode(ctx.config.uiLanguage));
+    ctx.uiRuntime->setTimezone(ctx.config.timezoneTz);
     ctx.uiRuntime->showToast("System", "Factory reset completed", 1600, backgroundTick);
     return;
   }

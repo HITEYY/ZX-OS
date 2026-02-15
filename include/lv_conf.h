@@ -9,7 +9,10 @@
 
 /* Fonts */
 #define LV_FONT_MONTSERRAT_14 1
-#define LV_FONT_SOURCE_HAN_SANS_SC_14_CJK 1
+#define LV_FONT_MONTSERRAT_16 1
+#define LV_FONT_MONTSERRAT_18 1
+#define LV_FONT_UNSCII_16 0
+#define LV_FONT_SOURCE_HAN_SANS_SC_14_CJK 0
 #define LV_FONT_DEFAULT &lv_font_montserrat_14
 
 /* Keep text UTF-8 for bilingual strings */
