@@ -377,6 +377,7 @@ class UiRuntime::Impl {
   int textInputCacheSelected = -1;
   int textInputCacheCapsIndex = -1;
   unsigned long textInputLastFullRenderMs = 0;
+  bool serviceActive = false;
 
   bool begin() {
     if (!port.begin()) {
@@ -419,12 +420,18 @@ class UiRuntime::Impl {
   }
 
   void service(const std::function<void()> *backgroundTick = nullptr) {
+    if (serviceActive) {
+      return;
+    }
+
+    serviceActive = true;
     if (backgroundTick && *backgroundTick) {
       (*backgroundTick)();
     }
 
     input.tick();
     port.pump();
+    serviceActive = false;
   }
 
   UiEvent pollInput() {

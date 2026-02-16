@@ -142,17 +142,9 @@ bool applyEnvGatewayKey(const String &key,
   return false;
 }
 
-void parseEnvGatewayOverrides(const String &blob, EnvGatewayOverrides &out) {
-  int start = 0;
-  while (start <= static_cast<int>(blob.length())) {
-    int lineEnd = blob.indexOf('\n', static_cast<unsigned int>(start));
-    if (lineEnd < 0) {
-      lineEnd = static_cast<int>(blob.length());
-    }
-
-    String line = blob.substring(static_cast<unsigned int>(start),
-                                 static_cast<unsigned int>(lineEnd));
-    start = lineEnd + 1;
+void parseEnvGatewayOverridesFromFile(File &file, EnvGatewayOverrides &out) {
+  while (file.available()) {
+    String line = file.readStringUntil('\n');
 
     line.trim();
     if (line.isEmpty() || line.startsWith("#")) {
@@ -206,15 +198,9 @@ bool readEnvGatewayOverridesFromSd(EnvGatewayOverrides &overrides,
     return false;
   }
 
-  const String blob = file.readString();
-  file.close();
-
   found = true;
-  if (blob.isEmpty()) {
-    return true;
-  }
-
-  parseEnvGatewayOverrides(blob, overrides);
+  parseEnvGatewayOverridesFromFile(file, overrides);
+  file.close();
   return true;
 }
 
@@ -337,21 +323,24 @@ bool readConfigFromSd(RuntimeConfig &outConfig,
     return false;
   }
 
-  const String blob = file.readString();
+  DynamicJsonDocument doc(4096);
+  const auto parseErr = deserializeJson(doc, file);
   file.close();
 
-  if (blob.isEmpty()) {
+  if (parseErr || !doc.is<JsonObject>()) {
     if (error) {
-      *error = "SD config is empty";
+      *error = "SD config parse failed";
     }
     return false;
   }
 
   RuntimeConfig parsed = makeDefaultConfig();
-  String parseErr;
-  if (!parseConfigBlob(blob, parsed, &parseErr)) {
+  fromJson(doc.as<JsonObjectConst>(), parsed);
+
+  String validateErr;
+  if (!validateConfig(parsed, &validateErr)) {
     if (error) {
-      *error = "SD " + parseErr;
+      *error = "SD config validation failed: " + validateErr;
     }
     return false;
   }

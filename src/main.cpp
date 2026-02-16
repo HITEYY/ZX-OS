@@ -3,6 +3,7 @@
 #include <WiFi.h>
 #include <Wire.h>
 #include <driver/rtc_io.h>
+#include <esp_heap_caps.h>
 #include <esp_sleep.h>
 
 #define XPOWERS_CHIP_BQ25896
@@ -35,7 +36,44 @@ bool gSleepDetectionArmed = false;
 constexpr unsigned long kDeepSleepHoldMs = 3000UL;
 constexpr unsigned long kSleepReleaseDebounceMs = 80UL;
 constexpr unsigned long kSleepReleasePollMs = 5UL;
+constexpr unsigned long kRamWatchPollMs = 1000UL;
+constexpr uint8_t kRamWatchRebootPercent = 100U;
 constexpr uint8_t kBacklightFullDuty = 254U;
+
+uint8_t heapUsedPercent(uint32_t caps) {
+  const uint32_t total = heap_caps_get_total_size(caps);
+  if (total == 0U) {
+    return 0U;
+  }
+
+  const uint32_t free = heap_caps_get_free_size(caps);
+  const uint32_t used = free < total ? (total - free) : 0U;
+  const uint32_t pct = (used * 100U) / total;
+  return static_cast<uint8_t>(pct > 100U ? 100U : pct);
+}
+
+void tickRamWatchdog() {
+  static unsigned long lastPollMs = 0;
+
+  const unsigned long now = millis();
+  if (lastPollMs != 0 && now - lastPollMs < kRamWatchPollMs) {
+    return;
+  }
+  lastPollMs = now;
+
+  const uint8_t internalPct = heapUsedPercent(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  const uint8_t psramPct = heapUsedPercent(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+
+  if (internalPct < kRamWatchRebootPercent && psramPct < kRamWatchRebootPercent) {
+    return;
+  }
+
+  Serial.printf("[ram] high usage detected (internal=%u%%, psram=%u%%) -> reboot\n",
+                static_cast<unsigned int>(internalPct),
+                static_cast<unsigned int>(psramPct));
+  Serial.flush();
+  ESP.restart();
+}
 
 void enableTopButtonWakeup() {
   const gpio_num_t wakePin = static_cast<gpio_num_t>(boardpins::kEncoderBack);
@@ -118,6 +156,7 @@ void tickDeepSleepButton() {
 
 void runBackgroundTick() {
   tickDeepSleepButton();
+  tickRamWatchdog();
   gWifi.tick();
   gGateway.tick();
   gBle.tick();

@@ -30,6 +30,10 @@ constexpr size_t kMessageChunkBytes = 960;
 constexpr uint32_t kMaxVoiceBytes = 2097152;
 constexpr uint32_t kMaxFileBytes = 4194304;
 constexpr size_t kOutboxCapacity = 40;
+constexpr size_t kOutboxMaxIdLen = 96;
+constexpr size_t kOutboxMaxMetaLen = 64;
+constexpr size_t kOutboxMaxTextLen = 768;
+constexpr size_t kOutboxMaxFileNameLen = 128;
 
 GatewayInboxMessage gOutbox[kOutboxCapacity];
 size_t gOutboxStart = 0;
@@ -75,10 +79,39 @@ String activeMessengerSessionKey() {
   return gMessengerSessionKey;
 }
 
+void clampString(String &value, size_t maxLen) {
+  if (maxLen == 0) {
+    value = "";
+    return;
+  }
+  if (value.length() <= maxLen) {
+    return;
+  }
+  if (maxLen <= 3) {
+    value = value.substring(0, maxLen);
+    return;
+  }
+  value = value.substring(0, maxLen - 3) + "...";
+}
+
+void clampOutboxMessage(GatewayInboxMessage &message) {
+  clampString(message.id, kOutboxMaxIdLen);
+  clampString(message.event, kOutboxMaxMetaLen);
+  clampString(message.type, kOutboxMaxMetaLen);
+  clampString(message.from, kOutboxMaxMetaLen);
+  clampString(message.to, kOutboxMaxMetaLen);
+  clampString(message.text, kOutboxMaxTextLen);
+  clampString(message.fileName, kOutboxMaxFileNameLen);
+  clampString(message.contentType, kOutboxMaxMetaLen);
+}
+
 void pushOutbox(const GatewayInboxMessage &message) {
   if (kOutboxCapacity == 0) {
     return;
   }
+
+  GatewayInboxMessage bounded = message;
+  clampOutboxMessage(bounded);
 
   size_t pos = 0;
   if (gOutboxCount < kOutboxCapacity) {
@@ -88,7 +121,7 @@ void pushOutbox(const GatewayInboxMessage &message) {
     pos = gOutboxStart;
     gOutboxStart = (gOutboxStart + 1) % kOutboxCapacity;
   }
-  gOutbox[pos] = message;
+  gOutbox[pos] = bounded;
 }
 
 bool outboxMessage(size_t index, GatewayInboxMessage &out) {

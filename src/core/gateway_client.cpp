@@ -27,6 +27,10 @@ constexpr size_t kDeviceSignatureLen = 64;
 constexpr size_t kGatewayFrameDocCapacity = 8192;
 constexpr size_t kGatewayFrameFilterCapacity = 1024;
 constexpr size_t kMaxGatewayFrameBytes = 131072;
+constexpr size_t kMaxMsgIdLen = 96;
+constexpr size_t kMaxMsgMetaLen = 64;
+constexpr size_t kMaxMsgTextLen = 768;
+constexpr size_t kMaxMsgFileNameLen = 128;
 
 bool isMarkupTagNameChar(char c) {
   return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
@@ -105,6 +109,32 @@ bool startsWithErrorMarker(const String &text) {
   String normalized = text;
   normalized.trim();
   return normalized.startsWith("[error]");
+}
+
+void clampString(String &value, size_t maxLen) {
+  if (maxLen == 0) {
+    value = "";
+    return;
+  }
+  if (value.length() <= maxLen) {
+    return;
+  }
+  if (maxLen <= 3) {
+    value = value.substring(0, maxLen);
+    return;
+  }
+  value = value.substring(0, maxLen - 3) + "...";
+}
+
+void clampInboxMessage(GatewayInboxMessage &message) {
+  clampString(message.id, kMaxMsgIdLen);
+  clampString(message.event, kMaxMsgMetaLen);
+  clampString(message.type, kMaxMsgMetaLen);
+  clampString(message.from, kMaxMsgMetaLen);
+  clampString(message.to, kMaxMsgMetaLen);
+  clampString(message.fileName, kMaxMsgFileNameLen);
+  clampString(message.contentType, kMaxMsgMetaLen);
+  clampString(message.text, kMaxMsgTextLen);
 }
 
 }  // namespace
@@ -1089,6 +1119,7 @@ bool GatewayClient::captureMessageEvent(const String &eventName, JsonObjectConst
     return true;
   }
 
+  clampInboxMessage(message);
   pushInboxMessage(message);
   return true;
 }
