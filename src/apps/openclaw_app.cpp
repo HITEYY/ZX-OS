@@ -384,7 +384,7 @@ bool sendMainSessionResetGreeting(AppContext &ctx,
     return false;
   }
 
-  String payloadText = "/new ";
+  String payloadText = "/reset ";
   payloadText += kSessionResetPrompt;
 
   DynamicJsonDocument payload(2048);
