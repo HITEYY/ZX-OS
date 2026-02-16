@@ -1,6 +1,7 @@
 #include "ui_runtime.h"
 
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <Wire.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
@@ -597,12 +598,15 @@ class UiRuntime::Impl {
       return false;
     }
 
+    WiFiClientSecure client;
+    client.setInsecure();
+
     HTTPClient http;
     http.setConnectTimeout(3500);
     http.setTimeout(4500);
 
-    const char *url = "http://ip-api.com/json/?fields=status,timezone,message";
-    if (!http.begin(url)) {
+    const char *url = "https://ipwho.is/?fields=success,timezone,message";
+    if (!http.begin(client, url)) {
       if (error) {
         *error = "HTTP begin failed";
       }
@@ -630,8 +634,8 @@ class UiRuntime::Impl {
       return false;
     }
 
-    const char *status = doc["status"] | "";
-    if (strlen(status) > 0 && strcmp(status, "success") != 0) {
+    const bool success = doc["success"] | false;
+    if (!success) {
       if (error) {
         const char *msg = doc["message"] | "IP lookup rejected";
         *error = String(msg);
@@ -639,7 +643,13 @@ class UiRuntime::Impl {
       return false;
     }
 
-    const char *zone = doc["timezone"] | "";
+    const JsonVariantConst timezoneNode = doc["timezone"];
+    const char *zone = "";
+    if (timezoneNode.is<JsonObjectConst>()) {
+      zone = timezoneNode["id"] | "";
+    } else {
+      zone = timezoneNode | "";
+    }
     String tz = String(zone);
     tz.trim();
     if (tz.isEmpty()) {
@@ -672,12 +682,15 @@ class UiRuntime::Impl {
       return false;
     }
 
+    WiFiClientSecure client;
+    client.setInsecure();
+
     HTTPClient http;
     http.setConnectTimeout(1800);
     http.setTimeout(2200);
     http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
 
-    if (!http.begin(USER_UNIX_TIME_SERVER_URL)) {
+    if (!http.begin(client, USER_UNIX_TIME_SERVER_URL)) {
       if (error) {
         *error = "Time server begin failed";
       }
@@ -696,21 +709,25 @@ class UiRuntime::Impl {
     const String payload = http.getString();
     http.end();
 
+    uint64_t unixSec64 = 0;
     uint64_t fileTime100Ns = 0;
-    if (!extractUint64JsonField(payload, "currentFileTime", &fileTime100Ns)) {
+    if (extractUint64JsonField(payload, "currentFileTime", &fileTime100Ns)) {
+      if (fileTime100Ns <= kWindowsEpochOffset100Ns) {
+        if (error) {
+          *error = "Time field invalid";
+        }
+        return false;
+      }
+      unixSec64 = (fileTime100Ns - kWindowsEpochOffset100Ns) / kHundredNsPerSecond;
+    } else if (!extractUint64JsonField(payload, "unixtime", &unixSec64) &&
+               !extractUint64JsonField(payload, "unixTime", &unixSec64) &&
+               !extractUint64JsonField(payload, "unix", &unixSec64)) {
       if (error) {
         *error = "Time field missing";
       }
       return false;
     }
-    if (fileTime100Ns <= kWindowsEpochOffset100Ns) {
-      if (error) {
-        *error = "Time field invalid";
-      }
-      return false;
-    }
 
-    const uint64_t unixSec64 = (fileTime100Ns - kWindowsEpochOffset100Ns) / kHundredNsPerSecond;
     const time_t unixSec = static_cast<time_t>(unixSec64);
     if (!isValidUnixTime(unixSec)) {
       if (error) {

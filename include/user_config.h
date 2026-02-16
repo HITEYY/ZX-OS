@@ -71,7 +71,7 @@
 #define USER_NTP_SERVER_1 "pool.ntp.org"
 #define USER_NTP_SERVER_2 "time.nist.gov"
 // Periodic UNIX time fallback source (UTC). Used to correct clock drift.
-#define USER_UNIX_TIME_SERVER_URL "http://worldclockapi.com/api/json/utc/now"
+#define USER_UNIX_TIME_SERVER_URL "https://worldclockapi.com/api/json/utc/now"
 
 // Display backlight brightness percent (0~100)
 #define USER_DISPLAY_BRIGHTNESS_PERCENT 100

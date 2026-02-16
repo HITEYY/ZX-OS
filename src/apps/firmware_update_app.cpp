@@ -219,7 +219,16 @@ bool httpGetSecure(const String &url,
   }
   if (code < 200 || code >= 300) {
     if (error) {
-      *error = "HTTP " + String(code);
+      String msg = "HTTP " + String(code);
+      DynamicJsonDocument doc(768);
+      const auto parseErr = deserializeJson(doc, responseOut);
+      if (!parseErr && doc.is<JsonObjectConst>()) {
+        const String detail = String(static_cast<const char *>(doc["message"] | ""));
+        if (!detail.isEmpty()) {
+          msg += ": " + detail;
+        }
+      }
+      *error = msg;
     }
     return false;
   }
@@ -305,21 +314,97 @@ bool parseLatestReleaseBody(const String &body,
   return true;
 }
 
-bool fetchLatestReleaseInfo(ReleaseInfo &infoOut,
-                            String *error) {
-  const String url = "https://api.github.com/repos/" + String(kFirmwareRepoSlug) +
-                     "/releases/latest";
-  String body;
-  int code = -1;
-  String httpErr;
-  if (!httpGetSecure(url, body, code, &httpErr)) {
+bool parseReleaseCatalogBody(const String &body,
+                             ReleaseInfo &infoOut,
+                             String *error) {
+  DynamicJsonDocument doc(65536);
+  const auto parseErr = deserializeJson(doc, body);
+  if (parseErr || !doc.is<JsonArrayConst>()) {
     if (error) {
-      *error = httpErr;
+      *error = "Release list parse failed";
     }
     return false;
   }
 
-  return parseLatestReleaseBody(body, "", infoOut, error);
+  const JsonArrayConst roots = doc.as<JsonArrayConst>();
+  for (JsonObjectConst root : roots) {
+    if (root["draft"] | false) {
+      continue;
+    }
+    if (!root["assets"].is<JsonArrayConst>()) {
+      continue;
+    }
+
+    const JsonArrayConst assets = root["assets"].as<JsonArrayConst>();
+    if (assets.size() == 0) {
+      continue;
+    }
+
+    JsonObjectConst selected;
+    for (JsonObjectConst asset : assets) {
+      const String name = String(static_cast<const char *>(asset["name"] | ""));
+      if (hasBinExtension(name)) {
+        selected = asset;
+        break;
+      }
+    }
+    if (selected.isNull()) {
+      selected = assets[0];
+    }
+
+    infoOut.tag = String(static_cast<const char *>(root["tag_name"] | ""));
+    if (infoOut.tag.isEmpty()) {
+      infoOut.tag = String(static_cast<const char *>(root["name"] | ""));
+    }
+    if (infoOut.tag.isEmpty()) {
+      infoOut.tag = "(unknown)";
+    }
+
+    infoOut.assetName = String(static_cast<const char *>(selected["name"] | ""));
+    infoOut.downloadUrl =
+        String(static_cast<const char *>(selected["browser_download_url"] | ""));
+    infoOut.size = selected["size"] | 0;
+
+    if (!infoOut.assetName.isEmpty() && !infoOut.downloadUrl.isEmpty()) {
+      return true;
+    }
+  }
+
+  if (error) {
+    *error = "No releases with downloadable assets";
+  }
+  return false;
+}
+
+bool fetchLatestReleaseInfo(ReleaseInfo &infoOut,
+                            String *error) {
+  const String latestUrl = "https://api.github.com/repos/" + String(kFirmwareRepoSlug) +
+                           "/releases/latest";
+  String latestBody;
+  int latestCode = -1;
+  String latestErr;
+  if (httpGetSecure(latestUrl, latestBody, latestCode, &latestErr)) {
+    return parseLatestReleaseBody(latestBody, "", infoOut, error);
+  }
+
+  const String listUrl = "https://api.github.com/repos/" + String(kFirmwareRepoSlug) +
+                         "/releases?per_page=8";
+  String listBody;
+  int listCode = -1;
+  String listErr;
+  if (httpGetSecure(listUrl, listBody, listCode, &listErr)) {
+    if (parseReleaseCatalogBody(listBody, infoOut, error)) {
+      return true;
+    }
+    if (error) {
+      *error = "No published firmware release found. Publish a GitHub Release with a .bin asset.";
+    }
+    return false;
+  }
+  if (error) {
+    *error = latestErr + " / " + listErr;
+  }
+  return false;
 }
 
 bool downloadUrlToSdFile(const String &url,
