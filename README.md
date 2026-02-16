@@ -5,7 +5,7 @@ LilyGo T-Embed CC1101 보드를 OpenClaw Remote Gateway에 `node`로 연결하�
 이 버전은 **LVGL 기반 런타임 UI 구조**를 사용합니다.
 
 - `OpenClaw` 앱: 상태 확인 + Gateway 설정 + Messenger(채팅/파일/음성) + Save & Apply + Connect/Disconnect/Reconnect
-- `Setting` 앱: Wi-Fi 설정 + BLE 스캔/연결/저장(재접속 대상) + System(Factory Reset)
+- `Setting` 앱: Wi-Fi 설정 + BLE 스캔/연결/저장(재접속 대상) + System(Factory Reset) + Firmware Update(독립 업데이트 메뉴)
 - `File Explorer` 앱: SD 카드 마운트/용량 확인/디렉토리 탐색/텍스트 미리보기/Quick Format
 - `APPMarket` 앱: GitHub 최신 릴리스 조회/다운로드 + SD 패키지 관리 + 펌웨어 설치/재설치/백업
 - `RF` 앱: CC1101 고급 설정(변조/채널/속도/편이/대역폭/패킷) + 패킷 TX/RX + RSSI + OOK TX
@@ -188,6 +188,10 @@ pio device monitor -b 115200
 6. `Setting -> System`
 - `UI Language`: `English/Korean` 전환
 - `Factory Reset`: 2단계 확인 후 SD 설정 파일 + NVS 백업 설정 삭제
+
+7. `Setting -> Firmware Update`
+- 독립 펌웨어 업데이트 메뉴에서 최신 릴리스 확인/다운로드/설치 수행
+- 다운로드 저장 위치: `/firmware/latest.bin`
 
 ## APPMarket 사용
 

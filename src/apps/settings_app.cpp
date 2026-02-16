@@ -1,4 +1,5 @@
 #include "settings_app.h"
+#include "firmware_update_app.h"
 
 #include <vector>
 
@@ -633,6 +634,7 @@ void runSettingsApp(AppContext &ctx,
     menu.push_back("Wi-Fi");
     menu.push_back("BLE");
     menu.push_back("System");
+    menu.push_back("Firmware Update");
     menu.push_back("Back");
 
     const String subtitle = ctx.configDirty ? "Unsaved changes" : "Saved";
@@ -643,7 +645,7 @@ void runSettingsApp(AppContext &ctx,
                                         "OK Select  BACK Exit",
                                         subtitle);
 
-    if (choice < 0 || choice == 3) {
+    if (choice < 0 || choice == 4) {
       return;
     }
 
@@ -655,6 +657,8 @@ void runSettingsApp(AppContext &ctx,
       runBleMenu(ctx, backgroundTick);
     } else if (choice == 2) {
       runSystemMenu(ctx, backgroundTick);
+    } else if (choice == 3) {
+      runFirmwareUpdateApp(ctx, backgroundTick);
     }
   }
 }
