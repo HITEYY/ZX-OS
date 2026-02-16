@@ -85,6 +85,11 @@ void clearOutbox() {
   gOutboxCount = 0;
 }
 
+void clearMessengerMessages(AppContext &ctx) {
+  ctx.gateway->clearInbox();
+  clearOutbox();
+}
+
 String trimMiddle(const String &value, size_t maxLength) {
   if (value.length() <= maxLength || maxLength < 6) {
     return value;
@@ -862,15 +867,8 @@ std::vector<ChatEntry> collectChatEntries(AppContext &ctx) {
   return entries;
 }
 
-std::vector<String> buildMessengerPreviewLines(AppContext &ctx,
-                                               const std::vector<ChatEntry> &entries) {
+std::vector<String> buildMessengerPreviewLines(const std::vector<ChatEntry> &entries) {
   std::vector<String> lines;
-  String status = "GW:";
-  status += ctx.gateway->status().gatewayReady ? "READY" : "DOWN";
-  status += " Msg:";
-  status += String(static_cast<unsigned long>(entries.size()));
-  lines.push_back(status);
-
   if (entries.empty()) {
     lines.push_back("(no messages)");
     return lines;
@@ -889,7 +887,7 @@ void runMessagingMenu(AppContext &ctx,
 
   while (true) {
     std::vector<ChatEntry> entries = collectChatEntries(ctx);
-    std::vector<String> previewLines = buildMessengerPreviewLines(ctx, entries);
+    std::vector<String> previewLines = buildMessengerPreviewLines(entries);
     const MessengerAction action = ctx.uiRuntime->messengerHomeLoop(previewLines,
                                                                     selected,
                                                                     backgroundTick);
@@ -905,7 +903,10 @@ void runMessagingMenu(AppContext &ctx,
                                  backgroundTick,
                                  "Send",
                                  "Cancel")) {
-        sendTextPayload(ctx, "/new", backgroundTick);
+        if (sendTextPayload(ctx, "/new", backgroundTick)) {
+          clearMessengerMessages(ctx);
+          ctx.uiRuntime->showToast("Messenger", "Session reset", 1200, backgroundTick);
+        }
       }
       continue;
     }
