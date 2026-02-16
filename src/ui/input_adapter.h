@@ -52,7 +52,7 @@ class InputAdapter {
 
   InputEvent pendingEvent_;
 
-  static constexpr uint8_t kQueueSize = 8;
+  static constexpr uint8_t kQueueSize = 32;
   KeyNode keyQueue_[kQueueSize];
   uint8_t keyHead_ = 0;
   uint8_t keyTail_ = 0;

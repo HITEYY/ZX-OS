@@ -62,6 +62,56 @@ String normalizeUuidLower(const String &value) {
   return out;
 }
 
+bool extractBootKeyboardReport(const uint8_t *data,
+                               size_t length,
+                               const uint8_t **reportOut) {
+  if (!reportOut || !data || length < 8) {
+    return false;
+  }
+
+  // Standard boot keyboard report layout is 8 bytes:
+  // [modifier][reserved][key1..key6]
+  if (length == 8) {
+    *reportOut = data;
+    return true;
+  }
+
+  // Many HID report characteristics prepend a 1-byte report-id.
+  if (length == 9) {
+    *reportOut = data + 1;
+    return true;
+  }
+
+  // Fallback: search for a plausible 8-byte window to improve compatibility
+  // with devices that include extra metadata around boot payload.
+  for (size_t offset = 0; offset + 8 <= length; ++offset) {
+    const uint8_t *candidate = data + offset;
+    if (candidate[1] != 0) {
+      continue;
+    }
+
+    bool hasKey = false;
+    for (size_t i = 0; i < 6; ++i) {
+      if (candidate[2 + i] != 0) {
+        hasKey = true;
+        break;
+      }
+    }
+
+    // Accept silent reports only at aligned edges to avoid random false hits.
+    if (!hasKey && offset != 0 && offset + 8 != length) {
+      continue;
+    }
+
+    *reportOut = candidate;
+    return true;
+  }
+
+  // Last resort: preserve prior behavior and use trailing bytes.
+  *reportOut = data + (length - 8);
+  return true;
+}
+
 void writeLe16(uint8_t *out, uint16_t value) {
   out[0] = static_cast<uint8_t>(value & 0xFFU);
   out[1] = static_cast<uint8_t>((value >> 8) & 0xFFU);
@@ -606,7 +656,7 @@ void BleManager::disconnectNow() {
 }
 
 void BleManager::clearKeyboardInput() {
-  keyboardInputBuffer_ = "";
+  keyboardInputBuffer_.remove(0);
 }
 
 String BleManager::keyboardInputText() const {
@@ -751,14 +801,9 @@ bool BleManager::subscribeKeyboardInput() {
 }
 
 void BleManager::handleKeyboardReport(const uint8_t *data, size_t length) {
-  if (!data || length < 8) {
+  const uint8_t *report = nullptr;
+  if (!extractBootKeyboardReport(data, length, &report) || !report) {
     return;
-  }
-
-  // Some HID reports prepend report-id; use trailing boot keyboard payload.
-  const uint8_t *report = data;
-  if (length > 8) {
-    report = data + (length - 8);
   }
 
   const uint8_t modifier = report[0];
@@ -1156,6 +1201,8 @@ void BleManager::resetSessionState() {
   connectedLikelyAudio_ = false;
   resetAudioStreamState();
   pairingHint_ = "";
+  keyboardInputBuffer_ = "";
+  keyboardInputBuffer_.reserve(320);
   std::memset(lastKeyboardKeys_, 0, sizeof(lastKeyboardKeys_));
 }
 

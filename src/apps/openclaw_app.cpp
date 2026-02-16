@@ -26,12 +26,6 @@ constexpr const char *kMessageSenderId = "node-host";
 constexpr const char *kDefaultAgentFallback = "default";
 constexpr const char *kDefaultSessionAgentId = "main";
 constexpr const char *kDefaultSessionKey = "agent:main:main";
-constexpr const char *kSessionResetPrompt =
-    "A new session was started via /new or /reset. Greet the user in your configured persona, "
-    "if one is provided. Be yourself - use your defined voice, mannerisms, and mood. Keep it "
-    "to 1-3 sentences and ask what they want to do. If the runtime model differs from "
-    "default_model in the system prompt, mention the default model. Do not mention internal "
-    "steps, files, tools, or reasoning.";
 constexpr size_t kMessageChunkBytes = 960;
 constexpr uint32_t kMaxVoiceBytes = 2097152;
 constexpr uint32_t kMaxFileBytes = 4194304;
@@ -384,11 +378,8 @@ bool sendMainSessionResetGreeting(AppContext &ctx,
     return false;
   }
 
-  String payloadText = "/reset ";
-  payloadText += kSessionResetPrompt;
-
   DynamicJsonDocument payload(2048);
-  payload["message"] = payloadText;
+  payload["message"] = "/new";
   payload["sessionKey"] = sessionKey;
   payload["deliver"] = false;
 
@@ -1051,7 +1042,7 @@ void runMessagingMenu(AppContext &ctx,
     if (action == MessengerAction::TextLong) {
       selected = 0;
       if (ctx.uiRuntime->confirm("New Session",
-                                 "Reset session and send greeting?",
+                                 "Start new session?",
                                  backgroundTick,
                                  "Run",
                                  "Cancel")) {

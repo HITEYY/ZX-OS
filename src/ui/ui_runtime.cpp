@@ -2250,9 +2250,10 @@ MessengerAction UiRuntime::messengerHomeLoop(const std::vector<String> &previewL
   constexpr int kButtonCount = 3;
   constexpr int kSelectableCount = kButtonCount + 1;  // + message box
   constexpr unsigned long kMessageRefreshMs = 5000;
+  constexpr int kInitialBottomScrollLines = 1000000;
   int focus = wrapIndex(selectedIndex + 1, kSelectableCount);
   bool scrollMode = false;
-  int scrollOffsetLines = 0;
+  int scrollOffsetLines = kInitialBottomScrollLines;  // Clamp to bottom on first render.
   int maxScrollLines = 0;
   bool redraw = true;
   unsigned long lastRefreshMs = millis();

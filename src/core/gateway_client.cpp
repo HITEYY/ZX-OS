@@ -28,6 +28,75 @@ constexpr size_t kGatewayFrameDocCapacity = 8192;
 constexpr size_t kGatewayFrameFilterCapacity = 1024;
 constexpr size_t kMaxGatewayFrameBytes = 131072;
 
+bool isMarkupTagNameChar(char c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+         (c >= '0' && c <= '9') || c == '_' || c == '-';
+}
+
+bool isControlChatTag(const String &tagName) {
+  return tagName.equalsIgnoreCase("analysis") ||
+         tagName.equalsIgnoreCase("commentary") ||
+         tagName.equalsIgnoreCase("final");
+}
+
+String stripControlChatTags(const String &text) {
+  if (text.isEmpty() || text.indexOf('<') < 0) {
+    return text;
+  }
+
+  String cleaned;
+  cleaned.reserve(text.length());
+
+  const size_t len = text.length();
+  size_t i = 0;
+  while (i < len) {
+    if (text[i] != '<') {
+      cleaned += text[i];
+      ++i;
+      continue;
+    }
+
+    size_t cursor = i + 1;
+    while (cursor < len &&
+           isspace(static_cast<unsigned char>(text[cursor]))) {
+      ++cursor;
+    }
+    if (cursor < len && text[cursor] == '/') {
+      ++cursor;
+    }
+    while (cursor < len &&
+           isspace(static_cast<unsigned char>(text[cursor]))) {
+      ++cursor;
+    }
+
+    const size_t nameStart = cursor;
+    while (cursor < len && isMarkupTagNameChar(text[cursor])) {
+      ++cursor;
+    }
+
+    if (nameStart == cursor) {
+      cleaned += text[i];
+      ++i;
+      continue;
+    }
+
+    const String tagName = text.substring(nameStart, cursor);
+    if (!isControlChatTag(tagName)) {
+      cleaned += text[i];
+      ++i;
+      continue;
+    }
+
+    // Handle both complete tags ("</final>") and split tail chunks ("</final").
+    while (cursor < len && text[cursor] != '>') {
+      ++cursor;
+    }
+    i = cursor < len ? (cursor + 1) : cursor;
+  }
+
+  return cleaned;
+}
+
 }  // namespace
 
 void GatewayClient::begin() {
@@ -939,6 +1008,10 @@ bool GatewayClient::captureMessageEvent(const String &eventName, JsonObjectConst
       }
     }
 
+    if (!message.text.isEmpty()) {
+      message.text = stripControlChatTags(message.text);
+    }
+
     if (message.text.isEmpty()) {
       const String state = readMessageString(payload, "state");
       const String errorMessage = readMessageString(payload, "errorMessage");
@@ -1015,7 +1088,11 @@ void GatewayClient::pushInboxMessage(const GatewayInboxMessage &message) {
     for (size_t i = 0; i < inboxCount_; ++i) {
       const size_t existingPos = (inboxStart_ + i) % kInboxCapacity;
       if (inbox_[existingPos].id == message.id) {
-        inbox_[existingPos] = message;
+        GatewayInboxMessage merged = message;
+        if (merged.text.isEmpty() && !inbox_[existingPos].text.isEmpty()) {
+          merged.text = inbox_[existingPos].text;
+        }
+        inbox_[existingPos] = merged;
         return;
       }
     }
