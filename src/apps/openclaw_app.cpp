@@ -336,8 +336,17 @@ void clearRecordStopButtonState(AppContext &ctx,
     delay(4);
   }
 
-  // Drain one-shot press/release events generated while stopping recording.
-  ctx.uiRuntime->pollInput();
+  // Let input processing observe the release edge at least once.
+  const unsigned long settleStartMs = millis();
+  while (millis() - settleStartMs < 30UL) {
+    if (backgroundTick) {
+      backgroundTick();
+    }
+    delay(2);
+  }
+
+  // Recording stop can leave stale button/key events in queue; fully resync input.
+  ctx.uiRuntime->resetInputState();
 }
 
 bool ensureGatewayReady(AppContext &ctx,

@@ -1,4 +1,4 @@
-name: Build Firmware
+name: Build Firmware and App Package
 
 on:
   push:
@@ -38,15 +38,19 @@ jobs:
       - name: Build firmware
         run: pio run -e ${{ matrix.env }}
 
-      - name: Prepare build artifact
-        run: |
-          mkdir -p dist
-          cp ".pio/build/${{ matrix.env }}/firmware.bin" "dist/openclaw-${{ matrix.env }}-${{ github.sha }}.bin"
+      - name: Package build artifacts
+        env:
+          PIO_ENV: ${{ matrix.env }}
+          VERSION_TAG: ${{ github.sha }}
+          REPO_SLUG: ${{ github.repository }}
+          INCLUDE_LATEST_ALIAS: "false"
+          INCLUDE_APP_BUNDLE: "true"
+        run: bash scripts/package_release_assets.sh
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: firmware-${{ matrix.env }}
-          path: dist/*.bin
+          name: build-${{ matrix.env }}
+          path: dist/*
           if-no-files-found: error
           retention-days: 14

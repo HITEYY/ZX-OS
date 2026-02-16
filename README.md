@@ -111,9 +111,10 @@ pio run -e t-embed-cc1101 -t upload
 pio device monitor -b 115200
 ```
 
-## 펌웨어 릴리즈 워크플로우
+## 펌웨어/앱 릴리즈 워크플로우
 
-`.github/workflows/release.yml`이 GitHub Release를 자동 생성합니다.
+- `.github/workflows/build.yml`: push/PR마다 펌웨어 + 앱 패키지 아티팩트 생성
+- `.github/workflows/release.yml`: 태그/수동 실행 시 GitHub Release 자동 생성
 
 1. 태그 기반 릴리즈
 ```bash
@@ -121,12 +122,17 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 2. 수동 릴리즈
-- GitHub Actions에서 `Release Firmware` 실행
+- GitHub Actions에서 `Release Firmware and App Package` 실행
 - 입력값: `tag` (예: `v1.0.0`), 필요 시 `prerelease`, `draft`
 
 생성 자산:
 - `openclaw-t-embed-cc1101-<tag>.bin`
 - `openclaw-t-embed-cc1101-<tag>.bin.sha256`
+- `openclaw-t-embed-cc1101-latest.bin`
+- `openclaw-t-embed-cc1101-latest.bin.sha256`
+- `openclaw-app-t-embed-cc1101-<tag>.json`
+- `openclaw-app-t-embed-cc1101-<tag>.zip`
+- `openclaw-app-t-embed-cc1101-<tag>.zip.sha256`
 
 ## 기본값 시드
 
@@ -224,8 +230,9 @@ git push origin v1.0.0
 
 `APPMarket` 앱에서 펌웨어 배포본을 GitHub에서 받아 SD로 관리하고 설치할 수 있습니다.
 
-1. `GitHub Repo`에 `owner/repo` 형식 입력
+1. APPMarket 저장소는 고정값 `HITEYY/AI-cc1101`을 사용합니다.
 2. (선택) `Release Asset`에 원하는 `.bin` 파일명 입력
+   - 기본 권장값: `openclaw-t-embed-cc1101-latest.bin`
    - 비워두면 latest release의 첫 `.bin` 자산을 자동 선택
 3. `Check Latest`로 최신 tag/asset 확인
 4. `Download Latest to SD`로 `/appmarket/latest.bin` 저장
@@ -236,7 +243,7 @@ git push origin v1.0.0
 - `Reinstall from Backup`: 백업본 재설치
 - `Install from SD .bin`: SD 카드의 임의 `.bin` 선택 설치
 - `Delete Latest Package` / `Delete Backup Package`: SD 패키지 삭제
-- `Save Config`: APPMarket 설정(repo/asset) 저장
+- `Save Config`: APPMarket 설정(asset) 저장
 
 ## BLE 연결 범위
 

@@ -2127,6 +2127,10 @@ UiEvent UiRuntime::pollInput() {
   return impl_->pollInput();
 }
 
+void UiRuntime::resetInputState() {
+  impl_->input.resetState();
+}
+
 void UiRuntime::setStatusLine(const String &line) {
   impl_->statusLine = line;
 }

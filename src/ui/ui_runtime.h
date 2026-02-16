@@ -33,6 +33,7 @@ class UiRuntime {
   void begin();
   void tick();
   UiEvent pollInput();
+  void resetInputState();
 
   void setStatusLine(const String &line);
 

@@ -134,6 +134,24 @@ void InputAdapter::tick() {
   backPrev_ = backPressed;
 }
 
+void InputAdapter::resetState() {
+  pendingEvent_ = InputEvent{};
+  pendingEncDiff_ = 0;
+  keyHead_ = 0;
+  keyTail_ = 0;
+  keyCount_ = 0;
+
+  const unsigned long now = millis();
+  okPrev_ = digitalRead(kPinOk) == LOW;
+  backPrev_ = digitalRead(kPinBack) == LOW;
+  okPressedAt_ = okPrev_ ? now : 0;
+  backPressedAt_ = backPrev_ ? now : 0;
+  okLongFired_ = false;
+
+  const int32_t pos = encoder_.getPosition();
+  lastEncoderPos_ = pos;
+}
+
 InputEvent InputAdapter::pollEvent() {
   InputEvent out = pendingEvent_;
   pendingEvent_ = InputEvent{};

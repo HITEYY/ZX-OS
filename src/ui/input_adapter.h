@@ -20,6 +20,7 @@ class InputAdapter {
 
   void begin(lv_display_t *display);
   void tick();
+  void resetState();
 
   InputEvent pollEvent();
 

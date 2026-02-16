@@ -1,4 +1,4 @@
-name: Release Firmware
+name: Release Firmware and App Package
 
 on:
   push:
@@ -23,6 +23,10 @@ on:
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref_name || github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -64,11 +68,13 @@ jobs:
         run: pio run -e "$PIO_ENV"
 
       - name: Package release assets
-        run: |
-          mkdir -p dist
-          ASSET_NAME="openclaw-${PIO_ENV}-${RELEASE_TAG}.bin"
-          cp ".pio/build/${PIO_ENV}/firmware.bin" "dist/${ASSET_NAME}"
-          sha256sum "dist/${ASSET_NAME}" > "dist/${ASSET_NAME}.sha256"
+        env:
+          PIO_ENV: ${{ env.PIO_ENV }}
+          VERSION_TAG: ${{ env.RELEASE_TAG }}
+          REPO_SLUG: ${{ github.repository }}
+          INCLUDE_LATEST_ALIAS: "true"
+          INCLUDE_APP_BUNDLE: "true"
+        run: bash scripts/package_release_assets.sh
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
@@ -80,6 +86,5 @@ jobs:
           prerelease: ${{ env.RELEASE_PRERELEASE == 'true' }}
           generate_release_notes: true
           files: |
-            dist/*.bin
-            dist/*.sha256
+            dist/*
           fail_on_unmatched_files: true

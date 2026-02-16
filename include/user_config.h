@@ -20,8 +20,9 @@
 // Optional APPMarket defaults.
 // Format: owner/repo (example: myorg/myfirmware)
 #define USER_APPMARKET_GITHUB_REPO "HITEYY/AI-cc1101"
-// Release asset file name (example: t-embed-cc1101.bin)
-#define USER_APPMARKET_RELEASE_ASSET ""
+// Release asset file name used by APPMarket.
+// This repo's release workflow always publishes this stable alias.
+#define USER_APPMARKET_RELEASE_ASSET "openclaw-t-embed-cc1101-latest.bin"
 
 // Node identity shown in OpenClaw.
 #define USER_OPENCLAW_DISPLAY_NAME "T-Embed CC1101"
