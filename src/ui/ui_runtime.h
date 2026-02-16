@@ -23,6 +23,7 @@ enum class MessengerAction : uint8_t {
   Voice = 2,
   File = 3,
   TextLong = 4,
+  Refresh = 5,
 };
 
 class UiRuntime {

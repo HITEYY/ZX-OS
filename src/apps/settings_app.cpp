@@ -318,9 +318,11 @@ void scanAndConnectBle(AppContext &ctx,
   const BleStatus status = ctx.ble->status();
   if (status.hidKeyboard) {
     ctx.uiRuntime->showToast("BLE", "Keyboard connected", 1400, backgroundTick);
+  } else if (status.audioStreamAvailable) {
+    ctx.uiRuntime->showToast("BLE", "Audio stream ready", 1500, backgroundTick);
   } else if (status.likelyAudio) {
     ctx.uiRuntime->showToast("BLE",
-                      "Connected, but audio stream unsupported",
+                      "Connected, but no audio stream characteristic",
                       1800,
                       backgroundTick);
   } else {

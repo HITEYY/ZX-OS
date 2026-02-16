@@ -25,7 +25,7 @@ namespace {
 constexpr const char *kMessageSenderId = "node-host";
 constexpr const char *kDefaultAgentFallback = "default";
 constexpr const char *kDefaultSessionAgentId = "main";
-constexpr const char *kDefaultSessionMainKey = "main";
+constexpr const char *kDefaultSessionKey = "agent:main:main";
 constexpr size_t kMessageChunkBytes = 960;
 constexpr uint32_t kMaxVoiceBytes = 2097152;
 constexpr uint32_t kMaxFileBytes = 4194304;
@@ -61,19 +61,7 @@ String defaultAgentId() {
 }
 
 String buildMainMessengerSessionKey() {
-  String key = "agent:";
-  key += kDefaultSessionAgentId;
-  key += ":";
-  key += kDefaultSessionMainKey;
-  return key;
-}
-
-String buildNewMessengerSessionKey() {
-  String key = "agent:";
-  key += kDefaultSessionAgentId;
-  key += ":oc-";
-  key += String(static_cast<unsigned long>(millis()));
-  return key;
+  return String(kDefaultSessionKey);
 }
 
 String activeMessengerSessionKey() {
@@ -525,33 +513,6 @@ bool sendVoiceFileMessage(AppContext &ctx,
   return true;
 }
 
-bool parseSecondsInput(const String &text, uint16_t *seconds) {
-  if (!seconds) {
-    return false;
-  }
-
-  String normalized = text;
-  normalized.trim();
-  if (normalized.isEmpty()) {
-    return false;
-  }
-
-  for (size_t i = 0; i < normalized.length(); ++i) {
-    const char c = normalized.charAt(i);
-    if (c < '0' || c > '9') {
-      return false;
-    }
-  }
-
-  const unsigned long parsed = normalized.toInt();
-  if (parsed == 0 || parsed > 65535UL) {
-    return false;
-  }
-
-  *seconds = static_cast<uint16_t>(parsed);
-  return true;
-}
-
 void sendVoiceMessage(AppContext &ctx,
                       const std::function<void()> &backgroundTick) {
   if (!ensureGatewayReady(ctx, backgroundTick)) {
@@ -596,31 +557,12 @@ void recordVoiceFromMic(AppContext &ctx,
   }
 
   if (!isMicRecordingAvailable()) {
-    ctx.uiRuntime->showToast("Voice", "MIC pin not configured", 1700, backgroundTick);
-    return;
-  }
-
-  String durationText = String(static_cast<unsigned long>(
-      std::max<uint32_t>(1U, static_cast<uint32_t>(USER_MIC_DEFAULT_SECONDS))));
-  if (!ctx.uiRuntime->textInput("Record Seconds", durationText, false, backgroundTick)) {
-    return;
-  }
-
-  uint16_t seconds = 0;
-  if (!parseSecondsInput(durationText, &seconds)) {
-    ctx.uiRuntime->showToast("Voice", "Invalid record seconds", 1600, backgroundTick);
+    ctx.uiRuntime->showToast("Voice", "MIC is not configured", 1700, backgroundTick);
     return;
   }
 
   const uint16_t maxSeconds = static_cast<uint16_t>(
       std::max<uint32_t>(1U, static_cast<uint32_t>(USER_MIC_MAX_SECONDS)));
-  if (seconds > maxSeconds) {
-    ctx.uiRuntime->showToast("Voice",
-                      "Max " + String(maxSeconds) + " seconds",
-                      1600,
-                      backgroundTick);
-    return;
-  }
 
   String caption;
   if (!ctx.uiRuntime->textInput("Caption(optional)", caption, false, backgroundTick)) {
@@ -641,13 +583,19 @@ void recordVoiceFromMic(AppContext &ctx,
   voicePath += String(static_cast<unsigned long>(millis()));
   voicePath += ".wav";
 
-  ctx.uiRuntime->showToast("Voice", "Recording from MIC...", 900, backgroundTick);
+  ctx.uiRuntime->showToast("Voice", "Recording... OK/BACK to stop", 900, backgroundTick);
 
   String recordErr;
   uint32_t bytesWritten = 0;
+  const auto stopRequested = [&ctx]() {
+    UiEvent ev = ctx.uiRuntime->pollInput();
+    return ev.ok || ev.back || ev.okLong || ev.okCount != 0 ||
+           ev.backCount != 0 || ev.okLongCount != 0;
+  };
   if (!recordMicWavToSd(voicePath,
-                        seconds,
+                        maxSeconds,
                         backgroundTick,
+                        stopRequested,
                         &recordErr,
                         &bytesWritten)) {
     ctx.uiRuntime->showToast("Voice",
@@ -667,41 +615,91 @@ void recordVoiceFromMic(AppContext &ctx,
   sendVoiceFileMessage(ctx, voicePath, caption, backgroundTick);
 }
 
-void recordVoiceFromBle(AppContext &ctx,
+bool recordVoiceFromBle(AppContext &ctx,
                         const std::function<void()> &backgroundTick) {
   BleStatus bs = ctx.ble->status();
   if (!bs.connected) {
-    ctx.uiRuntime->showToast("BLE", "No BLE device connected", 1600, backgroundTick);
-    return;
+    return false;
   }
-  ctx.uiRuntime->showToast("BLE",
-                    "BLE audio stream is unsupported, use MIC",
-                    1900,
-                    backgroundTick);
+
+  if (!bs.audioStreamAvailable) {
+    String message;
+    if (bs.likelyAudio) {
+      message = "BLE audio device connected, stream not found";
+    } else {
+      message = "BLE stream unavailable";
+    }
+    message += " -> MIC fallback";
+    ctx.uiRuntime->showToast("BLE", message, 1800, backgroundTick);
+    return false;
+  }
+
+  if (!ensureGatewayReady(ctx, backgroundTick)) {
+    return true;
+  }
+
+  const uint16_t maxSeconds = static_cast<uint16_t>(
+      std::max<uint32_t>(1U, static_cast<uint32_t>(USER_MIC_MAX_SECONDS)));
+
+  String caption;
+  if (!ctx.uiRuntime->textInput("Caption(optional)", caption, false, backgroundTick)) {
+    return true;
+  }
+  caption.trim();
+
+  String mountErr;
+  if (!ensureSdMountedForVoice(&mountErr)) {
+    ctx.uiRuntime->showToast("Voice",
+                      mountErr.isEmpty() ? String("SD mount failed") : mountErr,
+                      1600,
+                      backgroundTick);
+    return true;
+  }
+
+  String voicePath = "/voice-ble-";
+  voicePath += String(static_cast<unsigned long>(millis()));
+  voicePath += ".wav";
+
+  ctx.uiRuntime->showToast("BLE", "Recording... OK/BACK to stop", 900, backgroundTick);
+
+  String recordErr;
+  uint32_t bytesWritten = 0;
+  const auto stopRequested = [&ctx]() {
+    UiEvent ev = ctx.uiRuntime->pollInput();
+    return ev.ok || ev.back || ev.okLong || ev.okCount != 0 ||
+           ev.backCount != 0 || ev.okLongCount != 0;
+  };
+  if (!ctx.ble->recordAudioStreamWavToSd(voicePath,
+                                         maxSeconds,
+                                         backgroundTick,
+                                         stopRequested,
+                                         &recordErr,
+                                         &bytesWritten)) {
+    ctx.uiRuntime->showToast("BLE",
+                      recordErr.isEmpty() ? String("BLE recording failed")
+                                          : recordErr,
+                      1800,
+                      backgroundTick);
+    return true;
+  }
+
+  if (bytesWritten > kMaxVoiceBytes) {
+    SD.remove(voicePath.c_str());
+    ctx.uiRuntime->showToast("Voice", "Recording too large for send", 1700, backgroundTick);
+    return true;
+  }
+
+  sendVoiceFileMessage(ctx, voicePath, caption, backgroundTick);
+  return true;
 }
 
 void recordVoiceMessage(AppContext &ctx,
                         const std::function<void()> &backgroundTick) {
-  std::vector<String> sourceMenu;
-  sourceMenu.push_back("MIC (Device)");
-  sourceMenu.push_back("BLE Device");
-  sourceMenu.push_back("Back");
-
-  const int choice = ctx.uiRuntime->menuLoop("Record Voice",
-                                      sourceMenu,
-                                      0,
-                                      backgroundTick,
-                                      "OK Select  BACK Exit");
-  if (choice < 0 || choice == 2) {
+  // BLE must always have priority for voice source selection.
+  if (recordVoiceFromBle(ctx, backgroundTick)) {
     return;
   }
-
-  if (choice == 0) {
-    recordVoiceFromMic(ctx, backgroundTick);
-    return;
-  }
-
-  recordVoiceFromBle(ctx, backgroundTick);
+  recordVoiceFromMic(ctx, backgroundTick);
 }
 
 void sendFileMessage(AppContext &ctx,
@@ -946,7 +944,8 @@ std::vector<String> buildMessengerPreviewLines(const std::vector<ChatEntry> &ent
   }
 
   const int total = static_cast<int>(entries.size());
-  for (int i = total - 1; i >= 0 && static_cast<int>(lines.size()) < 3; --i) {
+  const int start = total > 3 ? total - 3 : 0;
+  for (int i = start; i < total; ++i) {
     lines.push_back(makeChatPreview(entries[static_cast<size_t>(i)]));
   }
   return lines;
@@ -969,6 +968,10 @@ void runMessagingMenu(AppContext &ctx,
       return;
     }
 
+    if (action == MessengerAction::Refresh) {
+      continue;
+    }
+
     if (action == MessengerAction::TextLong) {
       selected = 0;
       if (ctx.uiRuntime->confirm("New Session",
@@ -976,17 +979,7 @@ void runMessagingMenu(AppContext &ctx,
                                  backgroundTick,
                                  "Send",
                                  "Cancel")) {
-        const String previousSessionKey = activeMessengerSessionKey();
-        gMessengerSessionKey = buildNewMessengerSessionKey();
-        if (!ensureMessengerSessionSubscription(ctx, backgroundTick)) {
-          gMessengerSessionKey = previousSessionKey;
-          ensureMessengerSessionSubscription(ctx, backgroundTick, false);
-          continue;
-        }
-        if (sendTextPayload(ctx, "/new", backgroundTick)) {
-          clearMessengerMessages(ctx);
-          ctx.uiRuntime->showToast("Messenger", "Session reset", 1200, backgroundTick);
-        }
+        sendTextPayload(ctx, "/new", backgroundTick);
       }
       continue;
     }
@@ -1175,13 +1168,31 @@ std::vector<String> buildStatusLines(AppContext &ctx) {
                   (bs.deviceName.isEmpty() ? String("(none)") : bs.deviceName));
   lines.push_back("BLE Address: " +
                   (bs.deviceAddress.isEmpty() ? String("(none)") : bs.deviceAddress));
+  lines.push_back("Speaker Priority: BLE First");
+  lines.push_back("BLE Audio-like Device: " + boolLabel(bs.likelyAudio));
+  lines.push_back("BLE Audio Stream: " + boolLabel(bs.audioStreamAvailable));
+  lines.push_back("BLE Profile: " +
+                  (bs.profile.isEmpty() ? String("(unknown)") : bs.profile));
+  if (bs.audioStreamAvailable) {
+    lines.push_back("BLE Audio Svc: " +
+                    (bs.audioServiceUuid.isEmpty() ? String("(auto)") : bs.audioServiceUuid));
+    lines.push_back("BLE Audio Char: " +
+                    (bs.audioCharUuid.isEmpty() ? String("(auto)") : bs.audioCharUuid));
+  }
   if (bs.rssi != 0) {
     lines.push_back("BLE RSSI: " + String(bs.rssi));
   }
   lines.push_back("MIC Recording: " +
                   String(isMicRecordingAvailable() ? "Enabled" : "Disabled"));
   if (isMicRecordingAvailable()) {
-    lines.push_back("MIC Pin: " + String(static_cast<int>(USER_MIC_ADC_PIN)));
+    if (USER_MIC_ADC_PIN >= 0) {
+      lines.push_back("MIC Source: ADC");
+      lines.push_back("MIC Pin: " + String(static_cast<int>(USER_MIC_ADC_PIN)));
+    } else if (USER_MIC_PDM_DATA_PIN >= 0 && USER_MIC_PDM_CLK_PIN >= 0) {
+      lines.push_back("MIC Source: PDM");
+      lines.push_back("MIC Data Pin: " + String(static_cast<int>(USER_MIC_PDM_DATA_PIN)));
+      lines.push_back("MIC Clock Pin: " + String(static_cast<int>(USER_MIC_PDM_CLK_PIN)));
+    }
     lines.push_back("MIC Sample Rate: " +
                     String(static_cast<unsigned long>(USER_MIC_SAMPLE_RATE)));
   }

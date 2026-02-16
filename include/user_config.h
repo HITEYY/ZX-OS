@@ -32,15 +32,26 @@
 // CC1101 defaults
 #define USER_DEFAULT_RF_FREQUENCY_MHZ 433.92f
 
-// Voice recording defaults (ADC microphone input)
-// Set to a valid ADC-capable pin to enable MIC recording. Use -1 to disable.
+// Voice recording defaults
+// ADC microphone input:
+// Set to a valid ADC-capable pin to enable ADC MIC recording. Use -1 to disable.
 #define USER_MIC_ADC_PIN -1
+// PDM digital microphone input:
+// Set both pins to valid GPIOs to enable PDM MIC recording. Use -1 to disable.
+// LilyGo T-Embed CC1101 default onboard MIC pins: DATA=42, CLK=39.
+#define USER_MIC_PDM_DATA_PIN 42
+#define USER_MIC_PDM_CLK_PIN 39
 // Recommended range: 4000~22050
 #define USER_MIC_SAMPLE_RATE 8000U
 // Default recording duration for quick voice messages.
 #define USER_MIC_DEFAULT_SECONDS 5U
 // Maximum recording duration accepted by UI.
 #define USER_MIC_MAX_SECONDS 30U
+// Optional BLE audio stream UUID filter (leave empty for auto-detect).
+// Example (Nordic UART): service=6E400001-B5A3-F393-E0A9-E50E24DCCA9E
+//                         char   =6E400003-B5A3-F393-E0A9-E50E24DCCA9E
+#define USER_BLE_AUDIO_SERVICE_UUID ""
+#define USER_BLE_AUDIO_CHAR_UUID ""
 
 // External module pins (change for your wiring)
 // PN532 NFC (I2C)

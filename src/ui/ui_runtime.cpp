@@ -1129,10 +1129,16 @@ class UiRuntime::Impl {
     service(nullptr);
   }
 
-  void renderMessengerHome(const std::vector<String> &previewLines, int selected) {
+  int renderMessengerHome(const std::vector<String> &previewLines,
+                          int focus,
+                          bool scrollMode,
+                          int scrollOffsetLines) {
     int contentTop = 0;
     int contentBottom = 0;
-    renderBase("Messenger", "", "BACK Exit", contentTop, contentBottom);
+    const String footer = scrollMode
+                              ? String("ROT Scroll  OK Done  BACK Done")
+                              : String("ROT Move  OK Select  BACK Exit");
+    renderBase("Messenger", "", footer, contentTop, contentBottom);
 
     const int w = lv_display_get_horizontal_resolution(port.display());
     int contentH = contentBottom - contentTop + 1;
@@ -1175,50 +1181,84 @@ class UiRuntime::Impl {
     lv_obj_remove_style_all(box);
     lv_obj_set_pos(box, boxX, boxY);
     lv_obj_set_size(box, boxW, boxH);
+    const int safeFocus = wrapIndex(focus, 4);
+    const bool boxSelected = safeFocus == 0;
     lv_obj_set_style_radius(box, 6, 0);
-    lv_obj_set_style_bg_color(box, lv_color_hex(kClrPanelSoft), 0);
+    lv_obj_set_style_bg_color(box,
+                              boxSelected ? lv_color_hex(kClrPanel) : lv_color_hex(kClrPanelSoft),
+                              0);
     lv_obj_set_style_bg_opa(box, kOpa85, 0);
     lv_obj_set_style_border_width(box, 1, 0);
-    lv_obj_set_style_border_color(box, lv_color_hex(kClrBorder), 0);
+    lv_obj_set_style_border_color(box,
+                                  boxSelected ? lv_color_hex(kClrAccent)
+                                              : lv_color_hex(kClrBorder),
+                                  0);
     lv_obj_set_style_border_side(box, LV_BORDER_SIDE_FULL, 0);
     lv_obj_set_style_border_opa(box, LV_OPA_COVER, 0);
     lv_obj_set_style_outline_width(box, 0, 0);
     lv_obj_set_style_outline_opa(box, LV_OPA_TRANSP, 0);
     lv_obj_set_style_pad_all(box, 0, 0);
 
-    size_t lineCount = previewLines.size();
-    if (lineCount == 0) {
-      lineCount = 1;
-    } else if (lineCount > 3) {
-      lineCount = 3;
-    }
-    const int lineHeight = static_cast<int>(font()->line_height + 2);
-    const int lineGap = 2;
-    int textTotalH = static_cast<int>(lineCount) * lineHeight +
-                     static_cast<int>(lineCount > 0 ? (lineCount - 1) * lineGap : 0);
-    int textStartY = (boxH - textTotalH) / 2;
-    if (textStartY < 6) {
-      textStartY = 6;
+    String messageText;
+    if (previewLines.empty()) {
+      messageText = "(no messages)";
+    } else {
+      for (size_t i = 0; i < previewLines.size(); ++i) {
+        if (i > 0) {
+          messageText += "\n";
+        }
+        messageText += previewLines[i];
+      }
     }
 
-    for (size_t i = 0; i < lineCount; ++i) {
-      lv_obj_t *line = lv_label_create(box);
-      setSingleLineLabel(line, boxW - 12, LV_TEXT_ALIGN_LEFT);
-      lv_label_set_long_mode(line, LV_LABEL_LONG_SCROLL_CIRC);
-      String lineText;
-      if (previewLines.empty()) {
-        lineText = "(no messages)";
-      } else {
-        lineText = previewLines[i];
-      }
-      lv_label_set_text(line, lineText.c_str());
-      lv_obj_set_style_text_color(line, lv_color_hex(kClrTextPrimary), 0);
-      lv_obj_set_pos(line, 6, textStartY + static_cast<int>(i) * (lineHeight + lineGap));
+    lv_obj_t *messageLabel = lv_label_create(box);
+    setWrapLabel(messageLabel, boxW - 12);
+    lv_label_set_text(messageLabel, messageText.c_str());
+    lv_obj_set_style_text_color(messageLabel, lv_color_hex(kClrTextPrimary), 0);
+    lv_obj_set_pos(messageLabel, 6, 6);
+
+    lv_obj_update_layout(box);
+    int viewportH = boxH - 12;
+    if (viewportH < 1) {
+      viewportH = 1;
+    }
+    int contentTextH = lv_obj_get_height(messageLabel);
+    if (contentTextH < 0) {
+      contentTextH = 0;
+    }
+    int lineStep = static_cast<int>(font()->line_height + 2);
+    if (lineStep < 1) {
+      lineStep = 1;
+    }
+    const int maxScrollPx = contentTextH > viewportH ? contentTextH - viewportH : 0;
+    int maxScrollLines = 0;
+    if (maxScrollPx > 0) {
+      maxScrollLines = (maxScrollPx + lineStep - 1) / lineStep;
+    }
+    int clampedScrollLines = scrollOffsetLines;
+    if (clampedScrollLines < 0) {
+      clampedScrollLines = 0;
+    }
+    if (clampedScrollLines > maxScrollLines) {
+      clampedScrollLines = maxScrollLines;
+    }
+    int scrollPx = clampedScrollLines * lineStep;
+    if (scrollPx > maxScrollPx) {
+      scrollPx = maxScrollPx;
+    }
+    lv_obj_set_pos(messageLabel, 6, 6 - scrollPx);
+
+    if (boxSelected && scrollMode) {
+      lv_obj_t *modeLabel = lv_label_create(box);
+      setSingleLineLabel(modeLabel, boxW - 14, LV_TEXT_ALIGN_RIGHT);
+      lv_label_set_text(modeLabel, "SCROLL");
+      lv_obj_set_style_text_color(modeLabel, lv_color_hex(kClrAccent), 0);
+      lv_obj_align(modeLabel, LV_ALIGN_TOP_RIGHT, -6, 2);
     }
 
     const int kButtonCount = 3;
     const char *buttonLabels[kButtonCount] = {"Text", "Voice", "File"};
-    const int safeSelected = wrapIndex(selected, kButtonCount);
+    const int safeSelected = safeFocus;
 
     int rowX = 10;
     int rowW = w - 20;
@@ -1249,7 +1289,7 @@ class UiRuntime::Impl {
       lv_obj_set_style_outline_width(btn, 0, 0);
       lv_obj_set_style_outline_opa(btn, LV_OPA_TRANSP, 0);
 
-      const bool isSelected = i == safeSelected;
+      const bool isSelected = (i + 1) == safeSelected;
       lv_obj_set_style_bg_color(btn,
                                 isSelected ? lv_color_hex(kClrPanel) : lv_color_hex(kClrPanelSoft),
                                 0);
@@ -1268,6 +1308,7 @@ class UiRuntime::Impl {
     }
 
     service(nullptr);
+    return maxScrollLines;
   }
 
   void renderLauncher(const String &title,
@@ -2169,35 +2210,82 @@ MessengerAction UiRuntime::messengerHomeLoop(const std::vector<String> &previewL
                                              int selectedIndex,
                                              const std::function<void()> &backgroundTick) {
   constexpr int kButtonCount = 3;
-  int selected = wrapIndex(selectedIndex, kButtonCount);
+  constexpr int kSelectableCount = kButtonCount + 1;  // + message box
+  constexpr unsigned long kMessageRefreshMs = 5000;
+  int focus = wrapIndex(selectedIndex + 1, kSelectableCount);
+  bool scrollMode = false;
+  int scrollOffsetLines = 0;
+  int maxScrollLines = 0;
   bool redraw = true;
   unsigned long lastRefreshMs = millis();
+  unsigned long lastMessageRefreshMs = lastRefreshMs;
 
   while (true) {
     const unsigned long now = millis();
     if (redraw || now - lastRefreshMs >= kHeaderRefreshMs) {
-      impl_->renderMessengerHome(previewLines, selected);
+      maxScrollLines = impl_->renderMessengerHome(previewLines,
+                                                  focus,
+                                                  scrollMode,
+                                                  scrollOffsetLines);
+      if (scrollOffsetLines > maxScrollLines) {
+        scrollOffsetLines = maxScrollLines;
+      }
       redraw = false;
       lastRefreshMs = now;
     }
 
     impl_->service(&backgroundTick);
     UiEvent ev = pollInput();
+    const bool interacted = ev.delta != 0 || ev.ok || ev.back || ev.okLong ||
+                            ev.okCount != 0 || ev.backCount != 0 ||
+                            ev.okLongCount != 0;
+    if (interacted) {
+      lastMessageRefreshMs = millis();
+    }
+
+    if (scrollMode) {
+      if (ev.delta != 0) {
+        int nextOffset = scrollOffsetLines + ev.delta;
+        if (nextOffset < 0) {
+          nextOffset = 0;
+        }
+        if (nextOffset > maxScrollLines) {
+          nextOffset = maxScrollLines;
+        }
+        if (nextOffset != scrollOffsetLines) {
+          scrollOffsetLines = nextOffset;
+          redraw = true;
+        }
+      }
+
+      if (ev.ok || ev.back) {
+        scrollMode = false;
+        redraw = true;
+      }
+
+      delay(kUiLoopDelayMs);
+      continue;
+    }
 
     if (ev.delta != 0) {
-      selected = wrapIndex(selected + ev.delta, kButtonCount);
+      focus = wrapIndex(focus + ev.delta, kSelectableCount);
       redraw = true;
     }
 
-    if (ev.okLong && selected == 0) {
+    if (ev.okLong && focus == 1) {
       return MessengerAction::TextLong;
     }
 
     if (ev.ok) {
-      if (selected == 0) {
+      if (focus == 0) {
+        scrollMode = true;
+        redraw = true;
+        continue;
+      }
+      if (focus == 1) {
         return MessengerAction::Text;
       }
-      if (selected == 1) {
+      if (focus == 2) {
         return MessengerAction::Voice;
       }
       return MessengerAction::File;
@@ -2205,6 +2293,10 @@ MessengerAction UiRuntime::messengerHomeLoop(const std::vector<String> &previewL
 
     if (ev.back) {
       return MessengerAction::Back;
+    }
+
+    if (millis() - lastMessageRefreshMs >= kMessageRefreshMs) {
+      return MessengerAction::Refresh;
     }
 
     delay(kUiLoopDelayMs);
