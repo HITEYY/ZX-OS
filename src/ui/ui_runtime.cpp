@@ -2,13 +2,14 @@
 
 #include <WiFi.h>
 #include <Wire.h>
-#include <SD.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <lvgl.h>
 
 #include <time.h>
 #include <string.h>
+#include <stdlib.h>
+#include <sys/time.h>
 
 #include "../core/board_pins.h"
 #include "input_adapter.h"
@@ -44,8 +45,12 @@ constexpr lv_opa_t kOpa92 = static_cast<lv_opa_t>(235);
 constexpr unsigned long kHeaderRefreshMs = 1000UL;
 constexpr unsigned long kBatteryPollMs = 5000UL;
 constexpr unsigned long kNtpRetryMs = 30000UL;
-constexpr unsigned long kSdPollMs = 8000UL;
+constexpr unsigned long kUnixSyncRetryMs = 30000UL;
+constexpr unsigned long kUnixSyncRefreshMs = 15UL * 60UL * 1000UL;
 constexpr unsigned long kUiLoopDelayMs = 2UL;
+constexpr time_t kMinValidUnixTimeSec = 946684800;  // 2000-01-01T00:00:00Z
+constexpr uint64_t kWindowsEpochOffset100Ns = 116444736000000000ULL;
+constexpr uint64_t kHundredNsPerSecond = 10000000ULL;
 
 constexpr uint32_t kLauncherBg = kClrBg;
 constexpr uint32_t kLauncherPrimary = 0xEAF6FF;
@@ -97,14 +102,183 @@ String maskIfNeeded(const String &value, bool mask) {
   return out;
 }
 
-String formatUptimeClock(unsigned long ms) {
-  const unsigned long totalSec = ms / 1000UL;
-  const unsigned long hours = (totalSec / 3600UL) % 24UL;
-  const unsigned long mins = (totalSec / 60UL) % 60UL;
+bool isValidUnixTime(time_t unixSec) {
+  return unixSec >= kMinValidUnixTimeSec;
+}
 
-  char buf[6];
-  snprintf(buf, sizeof(buf), "%02lu:%02lu", hours, mins);
+bool isAllDigits(const String &value) {
+  if (value.length() == 0) {
+    return false;
+  }
+  for (size_t i = 0; i < value.length(); ++i) {
+    const char c = value[i];
+    if (c < '0' || c > '9') {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool parseUtcOffsetMinutes(const String &input, int *outMinutes) {
+  if (!outMinutes) {
+    return false;
+  }
+
+  String work = input;
+  work.trim();
+  if (work.length() == 0) {
+    return false;
+  }
+
+  if (work.equalsIgnoreCase("UTC") ||
+      work.equalsIgnoreCase("GMT") ||
+      work.equalsIgnoreCase("Z")) {
+    *outMinutes = 0;
+    return true;
+  }
+
+  if (work.length() >= 3 &&
+      (work.substring(0, 3).equalsIgnoreCase("UTC") ||
+       work.substring(0, 3).equalsIgnoreCase("GMT"))) {
+    work = work.substring(3);
+    work.trim();
+    if (work.length() == 0) {
+      *outMinutes = 0;
+      return true;
+    }
+  }
+
+  const char signChar = work[0];
+  if (signChar != '+' && signChar != '-') {
+    return false;
+  }
+  const int sign = signChar == '+' ? 1 : -1;
+
+  String digits = work.substring(1);
+  digits.trim();
+  digits.replace(":", "");
+  if (digits.length() < 1 || digits.length() > 4 || !isAllDigits(digits)) {
+    return false;
+  }
+
+  int hours = 0;
+  int mins = 0;
+  if (digits.length() <= 2) {
+    hours = digits.toInt();
+  } else {
+    const int cut = static_cast<int>(digits.length()) - 2;
+    const String hh = digits.substring(0, cut);
+    const String mm = digits.substring(cut);
+    if (!isAllDigits(hh) || !isAllDigits(mm)) {
+      return false;
+    }
+    hours = hh.toInt();
+    mins = mm.toInt();
+  }
+
+  if (hours > 14 || mins > 59) {
+    return false;
+  }
+
+  *outMinutes = sign * ((hours * 60) + mins);
+  return true;
+}
+
+String posixTzFromUtcOffsetMinutes(int utcOffsetMinutes) {
+  if (utcOffsetMinutes == 0) {
+    return String("UTC0");
+  }
+
+  const int posixMinutes = -utcOffsetMinutes;
+  const char sign = posixMinutes >= 0 ? '+' : '-';
+  const int absMinutes = posixMinutes >= 0 ? posixMinutes : -posixMinutes;
+  const int hours = absMinutes / 60;
+  const int mins = absMinutes % 60;
+
+  char buf[16];
+  if (mins == 0) {
+    snprintf(buf, sizeof(buf), "UTC%c%d", sign, hours);
+  } else {
+    snprintf(buf, sizeof(buf), "UTC%c%d:%02d", sign, hours, mins);
+  }
   return String(buf);
+}
+
+String normalizeTimezoneForPosix(const String &tz) {
+  String trimmed = tz;
+  trimmed.trim();
+  if (trimmed.isEmpty()) {
+    return String(USER_TIMEZONE_TZ);
+  }
+
+  // ESP32/newlib TZ parser does not understand IANA names directly.
+  if (trimmed.equalsIgnoreCase("Asia/Seoul")) {
+    return String("KST-9");
+  }
+  if (trimmed.equalsIgnoreCase("Etc/UTC") ||
+      trimmed.equalsIgnoreCase("UTC") ||
+      trimmed.equalsIgnoreCase("GMT")) {
+    return String("UTC0");
+  }
+
+  int utcOffsetMinutes = 0;
+  if (parseUtcOffsetMinutes(trimmed, &utcOffsetMinutes)) {
+    return posixTzFromUtcOffsetMinutes(utcOffsetMinutes);
+  }
+
+  // Assume caller already provided a POSIX TZ string.
+  return trimmed;
+}
+
+bool extractUint64JsonField(const String &json, const char *key, uint64_t *valueOut) {
+  if (!key || !valueOut) {
+    return false;
+  }
+
+  String token = "\"";
+  token += key;
+  token += "\":";
+
+  int idx = json.indexOf(token);
+  if (idx < 0) {
+    return false;
+  }
+  idx += token.length();
+
+  while (idx < static_cast<int>(json.length())) {
+    const char c = json[static_cast<unsigned int>(idx)];
+    if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+      ++idx;
+      continue;
+    }
+    break;
+  }
+
+  uint64_t value = 0;
+  bool hasDigit = false;
+  constexpr uint64_t kMaxBeforeMul10 = UINT64_MAX / 10ULL;
+  constexpr uint64_t kMaxLastDigit = UINT64_MAX % 10ULL;
+
+  while (idx < static_cast<int>(json.length())) {
+    const char c = json[static_cast<unsigned int>(idx)];
+    if (c < '0' || c > '9') {
+      break;
+    }
+    hasDigit = true;
+    const uint64_t digit = static_cast<uint64_t>(c - '0');
+    if (value > kMaxBeforeMul10 || (value == kMaxBeforeMul10 && digit > kMaxLastDigit)) {
+      return false;
+    }
+    value = value * 10ULL + digit;
+    ++idx;
+  }
+
+  if (!hasDigit) {
+    return false;
+  }
+
+  *valueOut = value;
+  return true;
 }
 
 String ellipsize(const String &text, size_t maxLen) {
@@ -139,6 +313,7 @@ class UiRuntime::Impl {
   String statusLine;
   UiLanguage language = UiLanguage::English;
   String timezoneTz = USER_TIMEZONE_TZ;
+  String timezonePosixTz = USER_TIMEZONE_TZ;
 
   String headerTime;
   String headerStatus;
@@ -147,12 +322,12 @@ class UiRuntime::Impl {
   bool batteryChargingKnown = false;
   bool batteryWireReady = false;
   uint8_t displayBrightnessPercent = clampBrightnessPercent(USER_DISPLAY_BRIGHTNESS_PERCENT);
-  int sdPct = -1;
   bool ntpStarted = false;
   bool launcherIconsAvailable = false;
   unsigned long lastNtpAttemptMs = 0;
+  unsigned long lastUnixSyncAttemptMs = 0;
+  unsigned long lastUnixSyncSuccessMs = 0;
   unsigned long lastBatteryPollMs = 0;
-  unsigned long lastSdPollMs = 0;
   unsigned long lastHeaderUpdateMs = 0;
 
   lv_obj_t *progressOverlay = nullptr;
@@ -320,21 +495,49 @@ class UiRuntime::Impl {
     }
     lastHeaderUpdateMs = now;
 
-    if (WiFi.status() == WL_CONNECTED && !ntpStarted &&
-        now - lastNtpAttemptMs >= kNtpRetryMs) {
-      lastNtpAttemptMs = now;
-      const char *tz = timezoneTz.isEmpty() ? USER_TIMEZONE_TZ : timezoneTz.c_str();
+    const bool wifiConnected = WiFi.status() == WL_CONNECTED;
+    if (wifiConnected && !ntpStarted) {
+      const char *tz = timezonePosixTz.isEmpty() ? USER_TIMEZONE_TZ : timezonePosixTz.c_str();
       configTzTime(tz, USER_NTP_SERVER_1, USER_NTP_SERVER_2);
       ntpStarted = true;
+      lastNtpAttemptMs = now;
     }
 
-    struct tm timeInfo;
-    if (getLocalTime(&timeInfo, 1)) {
-      char buf[6];
-      snprintf(buf, sizeof(buf), "%02d:%02d", timeInfo.tm_hour, timeInfo.tm_min);
-      headerTime = String(buf);
+    time_t unixNow = time(nullptr);
+    bool unixValid = isValidUnixTime(unixNow);
+    if (wifiConnected && ntpStarted && !unixValid &&
+        now - lastNtpAttemptMs >= kNtpRetryMs) {
+      const char *tz = timezonePosixTz.isEmpty() ? USER_TIMEZONE_TZ : timezonePosixTz.c_str();
+      configTzTime(tz, USER_NTP_SERVER_1, USER_NTP_SERVER_2);
+      lastNtpAttemptMs = now;
+    }
+
+    const bool unixSyncDue =
+        wifiConnected &&
+        (lastUnixSyncAttemptMs == 0 ||
+         (!unixValid && (now - lastUnixSyncAttemptMs >= kUnixSyncRetryMs)) ||
+         (unixValid && (lastUnixSyncSuccessMs == 0 ||
+                        now - lastUnixSyncSuccessMs >= kUnixSyncRefreshMs)));
+    if (unixSyncDue) {
+      lastUnixSyncAttemptMs = now;
+      if (syncUnixTimeFromServer(nullptr)) {
+        lastUnixSyncSuccessMs = now;
+        unixNow = time(nullptr);
+        unixValid = isValidUnixTime(unixNow);
+      }
+    }
+
+    if (unixValid) {
+      struct tm timeInfo;
+      if (localtime_r(&unixNow, &timeInfo) != nullptr) {
+        char buf[6];
+        snprintf(buf, sizeof(buf), "%02d:%02d", timeInfo.tm_hour, timeInfo.tm_min);
+        headerTime = String(buf);
+      } else {
+        headerTime = "--:--";
+      }
     } else {
-      headerTime = formatUptimeClock(now);
+      headerTime = "--:--";
     }
 
     if (now - lastBatteryPollMs >= kBatteryPollMs || batteryPct < 0) {
@@ -366,8 +569,13 @@ class UiRuntime::Impl {
       next = USER_TIMEZONE_TZ;
     }
     timezoneTz = next;
+    timezonePosixTz = normalizeTimezoneForPosix(next);
+    setenv("TZ", timezonePosixTz.c_str(), 1);
+    tzset();
     ntpStarted = false;
     lastNtpAttemptMs = 0;
+    lastUnixSyncAttemptMs = 0;
+    lastUnixSyncSuccessMs = 0;
   }
 
   String timezone() const {
@@ -442,7 +650,7 @@ class UiRuntime::Impl {
     }
 
     setTimezone(tz);
-    configTzTime(timezoneTz.c_str(), USER_NTP_SERVER_1, USER_NTP_SERVER_2);
+    configTzTime(timezonePosixTz.c_str(), USER_NTP_SERVER_1, USER_NTP_SERVER_2);
     ntpStarted = true;
     lastNtpAttemptMs = millis();
 
@@ -452,32 +660,76 @@ class UiRuntime::Impl {
     return true;
   }
 
-  void updateSdPercent() {
-    const unsigned long now = millis();
-    if (lastSdPollMs != 0 && now - lastSdPollMs < kSdPollMs) {
-      return;
-    }
-    lastSdPollMs = now;
-
-    const uint64_t totalBytes = SD.totalBytes();
-    if (totalBytes == 0) {
-      sdPct = -1;
-      return;
+  bool syncUnixTimeFromServer(String *error) {
+    if (error) {
+      error->clear();
     }
 
-    uint64_t usedBytes = SD.usedBytes();
-    if (usedBytes > totalBytes) {
-      usedBytes = totalBytes;
+    if (WiFi.status() != WL_CONNECTED) {
+      if (error) {
+        *error = "Wi-Fi not connected";
+      }
+      return false;
     }
 
-    const uint64_t pct = (usedBytes * 100ULL + (totalBytes / 2ULL)) / totalBytes;
-    sdPct = static_cast<int>(pct);
-    if (sdPct < 0) {
-      sdPct = 0;
+    HTTPClient http;
+    http.setConnectTimeout(1800);
+    http.setTimeout(2200);
+    http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+
+    if (!http.begin(USER_UNIX_TIME_SERVER_URL)) {
+      if (error) {
+        *error = "Time server begin failed";
+      }
+      return false;
     }
-    if (sdPct > 100) {
-      sdPct = 100;
+
+    const int statusCode = http.GET();
+    if (statusCode != HTTP_CODE_OK) {
+      if (error) {
+        *error = "Time server failed (" + String(statusCode) + ")";
+      }
+      http.end();
+      return false;
     }
+
+    const String payload = http.getString();
+    http.end();
+
+    uint64_t fileTime100Ns = 0;
+    if (!extractUint64JsonField(payload, "currentFileTime", &fileTime100Ns)) {
+      if (error) {
+        *error = "Time field missing";
+      }
+      return false;
+    }
+    if (fileTime100Ns <= kWindowsEpochOffset100Ns) {
+      if (error) {
+        *error = "Time field invalid";
+      }
+      return false;
+    }
+
+    const uint64_t unixSec64 = (fileTime100Ns - kWindowsEpochOffset100Ns) / kHundredNsPerSecond;
+    const time_t unixSec = static_cast<time_t>(unixSec64);
+    if (!isValidUnixTime(unixSec)) {
+      if (error) {
+        *error = "Unix time invalid";
+      }
+      return false;
+    }
+
+    timeval tv;
+    tv.tv_sec = unixSec;
+    tv.tv_usec = 0;
+    if (settimeofday(&tv, nullptr) != 0) {
+      if (error) {
+        *error = "settimeofday failed";
+      }
+      return false;
+    }
+
+    return true;
   }
 
   void drawBatteryIcon(lv_obj_t *parent, int x, int y) const {
@@ -1011,7 +1263,6 @@ class UiRuntime::Impl {
                       const std::vector<String> &items,
                       int selected) {
     updateHeaderIndicators();
-    updateSdPercent();
 
     lv_obj_t *screen = lv_screen_active();
     clearProgressHandles();
@@ -1061,11 +1312,11 @@ class UiRuntime::Impl {
     constexpr int kBatteryIconH = 9;
     const int batteryX = topW - kSidePadding - kBatteryIconW;
     const int batteryY = (topH - kBatteryIconH) / 2;
-    const int sdLabelW = 56;
-    const int sdBatteryGap = 12;
-    const int sdX = batteryX - sdBatteryGap - sdLabelW;
+    const int timeLabelW = 50;
+    const int timeBatteryGap = 12;
+    const int timeX = batteryX - timeBatteryGap - timeLabelW;
     const int titleX = kSidePadding;
-    int titleW = sdX - titleX - 6;
+    int titleW = timeX - titleX - 6;
     if (titleW < 16) {
       titleW = 16;
     }
@@ -1079,19 +1330,12 @@ class UiRuntime::Impl {
     lv_obj_set_style_text_color(titleLabel, lv_color_hex(kLauncherPrimary), 0);
     lv_obj_set_pos(titleLabel, titleX, labelY);
 
-    String sdText = "SD ";
-    if (sdPct >= 0) {
-      sdText += String(sdPct);
-      sdText += "%";
-    } else {
-      sdText += "--%";
-    }
-
-    lv_obj_t *sdLabel = lv_label_create(topBar);
-    setSingleLineLabel(sdLabel, sdLabelW, LV_TEXT_ALIGN_RIGHT);
-    lv_label_set_text(sdLabel, sdText.c_str());
-    lv_obj_set_style_text_color(sdLabel, lv_color_hex(kLauncherPrimary), 0);
-    lv_obj_set_pos(sdLabel, sdX, labelY);
+    const String timeText = headerTime.length() > 0 ? headerTime : "--:--";
+    lv_obj_t *timeLabel = lv_label_create(topBar);
+    setSingleLineLabel(timeLabel, timeLabelW, LV_TEXT_ALIGN_RIGHT);
+    lv_label_set_text(timeLabel, timeText.c_str());
+    lv_obj_set_style_text_color(timeLabel, lv_color_hex(kLauncherPrimary), 0);
+    lv_obj_set_pos(timeLabel, timeX, labelY);
 
     drawBatteryIcon(topBar, batteryX, batteryY);
 
