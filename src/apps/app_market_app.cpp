@@ -264,9 +264,20 @@ String normalizeRepoSlug(const String &rawInput) {
 bool resolveRepoSlug(const RuntimeConfig &config,
                      String &repoOut,
                      String *error) {
-  (void)config;
-  (void)error;
-  repoOut = kPinnedRepoSlug;
+  String repo = normalizeRepoSlug(config.appMarketGithubRepo);
+  if (repo.isEmpty()) {
+    repo = kPinnedRepoSlug;
+  }
+
+  const int slash = repo.indexOf('/');
+  if (slash <= 0 || slash >= static_cast<int>(repo.length()) - 1) {
+    if (error) {
+      *error = "GitHub repo must be owner/repo";
+    }
+    return false;
+  }
+
+  repoOut = repo;
   return true;
 }
 
@@ -553,6 +564,11 @@ bool browseReleaseAsset(AppContext &ctx,
                         ReleaseInfo &infoOut,
                         const std::function<void()> &backgroundTick,
                         String *error) {
+  String repo;
+  if (!resolveRepoSlug(ctx.config, repo, error)) {
+    return false;
+  }
+
   std::vector<ReleaseBrowseEntry> releases;
   if (!fetchReleaseCatalog(ctx.config, releases, error)) {
     return false;
@@ -572,8 +588,7 @@ bool browseReleaseAsset(AppContext &ctx,
                                               releaseSelected,
                                               backgroundTick,
                                               "OK Select  BACK Exit",
-                                              "Repo: " +
-                                                  trimMiddle(String(kPinnedRepoSlug), 22));
+                                              "Repo: " + trimMiddle(repo, 22));
     if (releaseChoice < 0 ||
         releaseChoice == static_cast<int>(releases.size())) {
       return false;
@@ -1224,6 +1239,7 @@ void runAppMarketApp(AppContext &ctx,
 
     std::vector<String> menu;
     menu.push_back("Status");
+    menu.push_back("GitHub Repo");
     menu.push_back("Release Asset");
     menu.push_back("Check Latest");
     menu.push_back("Browse Releases");
@@ -1238,7 +1254,13 @@ void runAppMarketApp(AppContext &ctx,
     menu.push_back("Save Config");
     menu.push_back("Back");
 
-    String subtitle = "Repo: " + trimMiddle(String(kPinnedRepoSlug), 22);
+    String subtitleRepo = kPinnedRepoSlug;
+    String repoErr;
+    String resolvedRepo;
+    if (resolveRepoSlug(ctx.config, resolvedRepo, &repoErr)) {
+      subtitleRepo = resolvedRepo;
+    }
+    String subtitle = "Repo: " + trimMiddle(subtitleRepo, 22);
     if (ctx.configDirty) {
       subtitle += " *DIRTY";
     }
@@ -1249,7 +1271,7 @@ void runAppMarketApp(AppContext &ctx,
                                         backgroundTick,
                                         "OK Select  BACK Exit",
                                         subtitle);
-    if (choice < 0 || choice == 12) {
+    if (choice < 0 || choice == 13) {
       return;
     }
     selected = choice;
@@ -1260,6 +1282,30 @@ void runAppMarketApp(AppContext &ctx,
     }
 
     if (choice == 1) {
+      String value = ctx.config.appMarketGithubRepo;
+      if (value.isEmpty()) {
+        value = kPinnedRepoSlug;
+      }
+
+      if (!ctx.uiRuntime->textInput("GitHub Repo (owner/repo)", value, false, backgroundTick)) {
+        continue;
+      }
+
+      value = normalizeRepoSlug(value);
+      const int slash = value.indexOf('/');
+      if (value.isEmpty() || slash <= 0 || slash >= static_cast<int>(value.length()) - 1) {
+        ctx.uiRuntime->showToast("APPMarket", "Repo must be owner/repo", 1500, backgroundTick);
+        continue;
+      }
+
+      ctx.config.appMarketGithubRepo = value;
+      markDirty(ctx);
+      lastAction = "Repo updated: " + value;
+      ctx.uiRuntime->showToast("APPMarket", "Repo updated", 1200, backgroundTick);
+      continue;
+    }
+
+    if (choice == 2) {
       String value = ctx.config.appMarketReleaseAsset;
       if (!ctx.uiRuntime->textInput("Release Asset (.bin)", value, false, backgroundTick)) {
         continue;
@@ -1272,7 +1318,7 @@ void runAppMarketApp(AppContext &ctx,
       continue;
     }
 
-    if (choice == 2) {
+    if (choice == 3) {
       ReleaseInfo info;
       String err;
       if (!fetchLatestReleaseInfo(ctx.config, info, &err)) {
@@ -1295,7 +1341,7 @@ void runAppMarketApp(AppContext &ctx,
       continue;
     }
 
-    if (choice == 3) {
+    if (choice == 4) {
       ReleaseInfo info;
       String err;
       if (!browseReleaseAsset(ctx, info, backgroundTick, &err)) {
@@ -1356,7 +1402,7 @@ void runAppMarketApp(AppContext &ctx,
       continue;
     }
 
-    if (choice == 4) {
+    if (choice == 5) {
       ReleaseInfo info;
       String err;
       if (!fetchLatestReleaseInfo(ctx.config, info, &err)) {
@@ -1396,7 +1442,7 @@ void runAppMarketApp(AppContext &ctx,
       continue;
     }
 
-    if (choice == 5) {
+    if (choice == 6) {
       if (!latestExists) {
         ctx.uiRuntime->showToast("APPMarket", "Latest package not found", 1700, backgroundTick);
         continue;
@@ -1436,7 +1482,7 @@ void runAppMarketApp(AppContext &ctx,
       return;
     }
 
-    if (choice == 6) {
+    if (choice == 7) {
       String err;
       {
         OverlayScope overlay(ctx.uiRuntime, "APPMarket", "Backing up running firmware...", 0);
@@ -1466,7 +1512,7 @@ void runAppMarketApp(AppContext &ctx,
       continue;
     }
 
-    if (choice == 7) {
+    if (choice == 8) {
       uint32_t backupSize = 0;
       if (!statSdFile(kBackupPackagePath, backupSize)) {
         ctx.uiRuntime->showToast("APPMarket", "Backup package not found", 1700, backgroundTick);
@@ -1507,7 +1553,7 @@ void runAppMarketApp(AppContext &ctx,
       return;
     }
 
-    if (choice == 8) {
+    if (choice == 9) {
       String path;
       if (!selectBinFileFromSd(ctx, path, backgroundTick)) {
         continue;
@@ -1548,7 +1594,7 @@ void runAppMarketApp(AppContext &ctx,
       return;
     }
 
-    if (choice == 9) {
+    if (choice == 10) {
       String err;
       if (!ensureSdMounted(false, &err)) {
         ctx.uiRuntime->showToast("APPMarket", err, 1700, backgroundTick);
@@ -1564,7 +1610,7 @@ void runAppMarketApp(AppContext &ctx,
       continue;
     }
 
-    if (choice == 10) {
+    if (choice == 11) {
       String err;
       if (!ensureSdMounted(false, &err)) {
         ctx.uiRuntime->showToast("APPMarket", err, 1700, backgroundTick);
@@ -1580,7 +1626,7 @@ void runAppMarketApp(AppContext &ctx,
       continue;
     }
 
-    if (choice == 11) {
+    if (choice == 12) {
       saveAppMarketConfig(ctx, backgroundTick);
       if (!ctx.configDirty) {
         lastAction = "Config saved";
