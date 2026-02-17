@@ -34,11 +34,9 @@ LilyGo T-Embed CC1101 보드를 OpenClaw Remote Gateway에 `node`로 연결하�
   - 텍스트 요청: `agent.request` (`node.event`)
   - 채팅 세션 구독: `chat.subscribe` / `chat.unsubscribe` (`node.event`)
   - 채팅 스트림 수신: `chat` (delta/final/error)
-  - 파일/음성 첨부(기본): `agent.request` 텍스트 프레이밍(`[ATTACHMENT_CHUNK]` / `[ATTACHMENT_COMPLETE]`)
-  - 파일 메타: `msg.file.meta`
-  - 파일 청크: `msg.file.chunk`
-  - 음성 메타: `msg.voice.meta`
-  - 음성 청크: `msg.voice.chunk`
+  - 파일/음성 첨부(기본): `agent.request` 텍스트 프레이밍(`[ATTACHMENT_BEGIN]` / `[ATTACHMENT_CHUNK]` / `[ATTACHMENT_END]`)
+  - `node` role 제약상 `chat.send + attachments`(`operator.write`) 직접 호출은 사용하지 않음
+  - 레거시 미디어 이벤트(`msg.file.meta/chunk`, `msg.voice.meta/chunk`)는 컴파일 옵션으로만 사용
 - Messenger 발신 대상 고정: `USER_OPENCLAW_DEFAULT_AGENT_ID` (기본값 `default`)
 - 설정 영구 저장(SD: `/oc_cfg.json`, NVS 백업: namespace `oc_cfg`)
 - Bruce 스타일 QWERTY 입력(온디바이스 키보드)
@@ -54,8 +52,8 @@ LilyGo T-Embed CC1101 보드를 OpenClaw Remote Gateway에 `node`로 연결하�
   - `Setting -> BLE -> Clear Keyboard Input`으로 버퍼 초기화
 - MIC(ADC/PDM) 직접 녹음 후 음성 메시지 전송
   - `OpenClaw -> Messenger -> Record Voice` (BLE 우선, 미지원 시 MIC 폴백)
-  - BLE notify 기반 오디오 스트림 수신 시 `.wav` 저장 후 `agent.request` 기반 첨부 전송(폴백: `msg.voice.meta/chunk`)
-  - 녹음된 파일은 SD에 `.wav`로 저장 후 `agent.request` 기반 첨부 전송(폴백: `msg.voice.meta/chunk`)
+  - BLE notify 기반 오디오 스트림 수신 시 `.wav` 저장 후 정책 기반 첨부 전송
+  - 녹음된 파일은 SD에 `.wav`로 저장 후 정책 기반 첨부 전송
 
 ## LVGL UI 아키텍처
 
@@ -209,15 +207,20 @@ git push origin v1.0.0
 - `Write Message`: 텍스트 메시지 전송
   - 내부적으로 `agent.request` + `chat.subscribe`를 사용해 Agent 실시간 응답 수신
 - `Send File (SD)`: SD 일반 파일 전송(최대 4MB)
-  - 기본 경로: `agent.request` 기반 첨부 전송
-  - 폴백 경로: `msg.file.meta/chunk`
+  - 라우팅 정책:
+    - `image/*` + 512KB 이하: `agent.request` framed
+    - 비이미지(`pdf/zip/bin/json/txt` 등): text fallback
+    - 512KB 초과: text fallback
+    - framed 실패 시: `USER_MESSENGER_ENABLE_LEGACY_MEDIA_FALLBACK=1`일 때만 `msg.file.meta/chunk`
 - `Record Voice`: BLE 오디오 우선
   - BLE 스트림 특성(Notify/Indicate) 발견 시 BLE 오디오를 녹음 후 전송
   - BLE 스트림 미발견/미연결 시 장치 MIC(ADC/PDM)로 자동 폴백
   - 녹음 시간 입력 없이 `OK` 또는 `BACK` 버튼으로 녹음 종료
 - `Send Voice File (SD)`: SD 오디오 파일(`.wav/.mp3/.m4a/.aac/.opus/.ogg`) 전송(최대 2MB)
-  - 기본 경로: `agent.request` 기반 첨부 전송
-  - 폴백 경로: `msg.voice.meta/chunk`
+  - 라우팅 정책:
+    - 512KB 이하: `agent.request` framed
+    - 512KB 초과: text fallback
+    - framed 실패 시: `USER_MESSENGER_ENABLE_LEGACY_MEDIA_FALLBACK=1`일 때만 `msg.voice.meta/chunk`
 - 채팅 로그: 송신/수신 메시지 통합 보기 + 상세 보기 + 로그 삭제
 - 모든 발신(`text/file/voice`)은 `USER_OPENCLAW_DEFAULT_AGENT_ID`로 전송
 

@@ -1,6 +1,7 @@
 #include "openclaw_app.h"
 
 #include <SD.h>
+#include <SHA256.h>
 #include <SPI.h>
 #include <WiFi.h>
 #include <limits.h>
@@ -36,10 +37,18 @@ constexpr size_t kBase64ChunkBufferBytes =
 constexpr size_t kAgentAttachmentChunkBytes = 3840;
 constexpr size_t kAgentAttachmentBase64ChunkBytes =
     ((kAgentAttachmentChunkBytes + 2U) / 3U) * 4U + 1U;
-constexpr uint16_t kAgentAttachmentMaxChunks = 1200;
-constexpr uint32_t kAgentAttachmentMaxBytes =
-    static_cast<uint32_t>(kAgentAttachmentChunkBytes) *
-    static_cast<uint32_t>(kAgentAttachmentMaxChunks);
+constexpr uint32_t kMessengerBinaryAttachMaxBytes =
+    static_cast<uint32_t>(USER_MESSENGER_BINARY_ATTACH_MAX_BYTES);
+constexpr size_t kMessengerTextFallbackPreviewMaxChars =
+    static_cast<size_t>(USER_MESSENGER_TEXT_FALLBACK_PREVIEW_MAX_CHARS);
+constexpr uint16_t kAgentAttachmentMaxChunks =
+    static_cast<uint16_t>((kMessengerBinaryAttachMaxBytes +
+                           static_cast<uint32_t>(kAgentAttachmentChunkBytes) - 1U) /
+                          static_cast<uint32_t>(kAgentAttachmentChunkBytes));
+constexpr uint32_t kAgentAttachmentMaxBytes = kMessengerBinaryAttachMaxBytes;
+constexpr bool kLegacyMediaFallbackEnabled =
+    USER_MESSENGER_ENABLE_LEGACY_MEDIA_FALLBACK != 0;
+constexpr size_t kAgentRequestMessageMaxChars = 19000U;
 constexpr uint32_t kMaxVoiceBytes = 2097152;
 constexpr uint32_t kMaxFileBytes = 4194304;
 constexpr uint8_t kChunkSendMaxRetries = 3;
@@ -69,10 +78,27 @@ struct SdSelectEntry {
   uint64_t size = 0;
 };
 
-enum class AgentAttachmentSendResult {
-  Sent,
-  NotAttempted,
-  Failed,
+enum class AttachmentKind : uint8_t {
+  File = 0,
+  Voice = 1,
+};
+
+enum class AttachmentRoute : uint8_t {
+  Framed = 0,
+  TextFallback = 1,
+  LegacyMetaChunk = 2,
+  Failed = 3,
+};
+
+struct AttachmentSendResult {
+  bool ok = false;
+  AttachmentRoute route = AttachmentRoute::Failed;
+  String error;
+  String messageId;
+  String eventName;
+  String mimeType;
+  String fileName;
+  uint32_t totalBytes = 0;
 };
 
 class ScopedOkBackBlock {
@@ -91,6 +117,32 @@ class ScopedOkBackBlock {
 
  private:
   UiRuntime *ui_ = nullptr;
+};
+
+class ScopedProgressOverlay {
+ public:
+  ScopedProgressOverlay(UiRuntime *ui, const String &title, const String &message)
+      : ui_(ui), title_(title) {
+    if (ui_) {
+      ui_->showProgressOverlay(title_, message, 0);
+    }
+  }
+
+  ~ScopedProgressOverlay() {
+    if (ui_) {
+      ui_->hideProgressOverlay();
+    }
+  }
+
+  void update(const String &message, int percent = -1) {
+    if (ui_) {
+      ui_->showProgressOverlay(title_, message, percent);
+    }
+  }
+
+ private:
+  UiRuntime *ui_ = nullptr;
+  String title_;
 };
 
 bool sendTextPayload(AppContext &ctx,
@@ -112,6 +164,36 @@ String defaultAgentId() {
     id = kDefaultAgentFallback;
   }
   return id;
+}
+
+const char *attachmentKindToken(AttachmentKind kind) {
+  return kind == AttachmentKind::Voice ? "voice" : "file";
+}
+
+String attachmentUiTitle(AttachmentKind kind) {
+  return kind == AttachmentKind::Voice ? "Voice" : "File";
+}
+
+String attachmentRouteToast(AttachmentRoute route) {
+  if (route == AttachmentRoute::Framed) {
+    return "Sent (framed)";
+  }
+  if (route == AttachmentRoute::TextFallback) {
+    return "Sent (text fallback)";
+  }
+  if (route == AttachmentRoute::LegacyMetaChunk) {
+    return "Sent (legacy fallback)";
+  }
+  return "Send failed";
+}
+
+bool isImageMimeType(const String &mimeType) {
+  return mimeType.startsWith("image/");
+}
+
+bool isTextPreviewMimeType(const String &mimeType) {
+  return mimeType == "text/plain" || mimeType == "application/json" ||
+         mimeType == "text/csv";
 }
 
 String withGatewayErrorSuffix(const String &base, GatewayClient *gateway) {
@@ -794,8 +876,18 @@ bool sendAgentRequestMessage(AppContext &ctx,
                              const String &sessionKey,
                              const String &target,
                              const String &message,
-                             const std::function<void()> &backgroundTick) {
+                             const std::function<void()> &backgroundTick,
+                             String *errorOut = nullptr) {
   if (message.isEmpty()) {
+    if (errorOut) {
+      *errorOut = "Message is empty";
+    }
+    return false;
+  }
+  if (message.length() > kAgentRequestMessageMaxChars) {
+    if (errorOut) {
+      *errorOut = "Attachment frame too large";
+    }
     return false;
   }
 
@@ -812,36 +904,278 @@ bool sendAgentRequestMessage(AppContext &ctx,
   }
   payload["deliver"] = false;
   payload["thinking"] = "low";
-  return sendGatewayEventWithRetry(ctx, "agent.request", payload, backgroundTick);
+  if (!sendGatewayEventWithRetry(ctx, "agent.request", payload, backgroundTick)) {
+    if (errorOut) {
+      *errorOut = withGatewayErrorSuffix("Agent request send failed", ctx.gateway);
+    }
+    return false;
+  }
+  return true;
 }
 
-AgentAttachmentSendResult sendAttachmentViaAgentRequest(
+String hexDigest(const uint8_t *digest, size_t len) {
+  static const char kHex[] = "0123456789abcdef";
+  if (!digest || len == 0) {
+    return "";
+  }
+  String out;
+  out.reserve(len * 2U);
+  for (size_t i = 0; i < len; ++i) {
+    const uint8_t value = digest[i];
+    out += kHex[(value >> 4) & 0x0F];
+    out += kHex[value & 0x0F];
+  }
+  return out;
+}
+
+String computeFileSha256Hex(const String &filePath, String *errorOut = nullptr) {
+  File file = SD.open(filePath.c_str(), FILE_READ);
+  if (!file || file.isDirectory()) {
+    if (file) {
+      file.close();
+    }
+    if (errorOut) {
+      *errorOut = "Checksum read failed";
+    }
+    return "";
+  }
+
+  SHA256 hash;
+  uint8_t digest[SHA256::HASH_SIZE] = {0};
+  uint8_t buffer[1024] = {0};
+  bool failed = false;
+
+  hash.reset();
+  while (file.available()) {
+    const size_t readLen = file.read(buffer, sizeof(buffer));
+    if (readLen == 0) {
+      failed = true;
+      break;
+    }
+    hash.update(buffer, readLen);
+  }
+  file.close();
+
+  if (failed) {
+    if (errorOut) {
+      *errorOut = "Checksum read failed";
+    }
+    return "";
+  }
+
+  hash.finalize(digest, sizeof(digest));
+  const String hex = hexDigest(digest, sizeof(digest));
+  if (hex.isEmpty() && errorOut) {
+    *errorOut = "Checksum encode failed";
+  }
+  return hex;
+}
+
+String readTextFilePreview(const String &filePath,
+                           size_t maxChars,
+                           bool *truncatedOut = nullptr,
+                           String *errorOut = nullptr) {
+  if (truncatedOut) {
+    *truncatedOut = false;
+  }
+  if (maxChars == 0) {
+    return "";
+  }
+
+  File file = SD.open(filePath.c_str(), FILE_READ);
+  if (!file || file.isDirectory()) {
+    if (file) {
+      file.close();
+    }
+    if (errorOut) {
+      *errorOut = "Preview read failed";
+    }
+    return "";
+  }
+
+  String preview;
+  preview.reserve(std::min<size_t>(maxChars, 512U));
+  size_t count = 0;
+
+  while (file.available() && count < maxChars) {
+    const int next = file.read();
+    if (next < 0) {
+      break;
+    }
+    if (next == '\r') {
+      continue;
+    }
+    char append = ' ';
+    if (next == '\n' || next == '\t') {
+      append = static_cast<char>(next);
+    } else if (next >= 32 || next >= 0x80) {
+      append = static_cast<char>(next);
+    }
+    preview += append;
+    ++count;
+  }
+
+  if (truncatedOut) {
+    *truncatedOut = file.available();
+  }
+  file.close();
+  return preview;
+}
+
+String buildAttachmentFallbackMessage(AttachmentKind kind,
+                                      const String &messageId,
+                                      const String &filePath,
+                                      const String &fileName,
+                                      const String &mimeType,
+                                      uint32_t totalBytes,
+                                      const String &caption,
+                                      const String &reason,
+                                      const String &preview,
+                                      bool previewTruncated) {
+  String message;
+  message.reserve(caption.length() + preview.length() + 640U);
+  message += "[ATTACHMENT_TEXT_FALLBACK]\n";
+  message += "id:";
+  message += messageId;
+  message += "\nkind:";
+  message += attachmentKindToken(kind);
+  message += "\nname:";
+  message += fileName;
+  message += "\npath:";
+  message += filePath;
+  message += "\nmime:";
+  message += mimeType;
+  message += "\nsize:";
+  message += String(static_cast<unsigned long>(totalBytes));
+  message += "\nts:";
+  message += String(static_cast<unsigned long long>(currentUnixMs()));
+  if (!caption.isEmpty()) {
+    message += "\ncaption:";
+    message += caption;
+  }
+  if (!reason.isEmpty()) {
+    message += "\nreason:";
+    message += reason;
+  }
+  message += "\nnote:Node role uses agent.request relay. Binary attachments are limited.";
+  if (!preview.isEmpty()) {
+    message += "\npreviewTruncated:";
+    message += previewTruncated ? "true" : "false";
+    message += "\npreview:\n";
+    message += preview;
+  }
+  return message;
+}
+
+AttachmentSendResult sendAttachmentTextFallback(
+    AppContext &ctx,
+    AttachmentKind kind,
+    const String &filePath,
+    const String &mimeType,
+    const String &target,
+    const String &caption,
+    uint32_t totalBytes,
+    const String &reason,
+    const std::function<void()> &backgroundTick) {
+  AttachmentSendResult result;
+  result.ok = false;
+  result.route = AttachmentRoute::Failed;
+  result.eventName = "agent.request";
+  result.mimeType = mimeType;
+  result.fileName = baseName(filePath);
+  result.totalBytes = totalBytes;
+  result.messageId = makeMessageId(attachmentKindToken(kind));
+
+  if (!ensureMessengerSessionSubscription(ctx, backgroundTick)) {
+    result.error = "Chat subscribe failed";
+    return result;
+  }
+
+  String preview;
+  bool previewTruncated = false;
+  if (kind == AttachmentKind::File && isTextPreviewMimeType(mimeType)) {
+    preview = readTextFilePreview(filePath,
+                                  kMessengerTextFallbackPreviewMaxChars,
+                                  &previewTruncated,
+                                  nullptr);
+  }
+  const String sessionKey = activeMessengerSessionKey();
+  const String message = buildAttachmentFallbackMessage(kind,
+                                                        result.messageId,
+                                                        filePath,
+                                                        result.fileName,
+                                                        mimeType,
+                                                        totalBytes,
+                                                        caption,
+                                                        reason,
+                                                        preview,
+                                                        previewTruncated);
+  String sendError;
+  if (!sendAgentRequestMessage(ctx,
+                               sessionKey,
+                               target,
+                               message,
+                               backgroundTick,
+                               &sendError)) {
+    result.error = sendError.isEmpty() ? String("Text fallback send failed") : sendError;
+    return result;
+  }
+
+  result.ok = true;
+  result.route = AttachmentRoute::TextFallback;
+  return result;
+}
+
+AttachmentSendResult sendAttachmentViaAgentRequest(
     AppContext &ctx,
     const String &filePath,
     const String &mimeType,
-    const char *kind,
+    AttachmentKind kind,
     const String &target,
     const String &caption,
     uint32_t totalBytes,
     const std::function<void()> &backgroundTick) {
-  if (!kind || totalBytes == 0 || totalBytes > kAgentAttachmentMaxBytes) {
-    return AgentAttachmentSendResult::NotAttempted;
+  AttachmentSendResult result;
+  result.ok = false;
+  result.route = AttachmentRoute::Failed;
+  result.eventName = "agent.request";
+  result.mimeType = mimeType;
+  result.fileName = baseName(filePath);
+  result.totalBytes = totalBytes;
+  result.messageId = makeMessageId(attachmentKindToken(kind));
+
+  if (totalBytes == 0 || totalBytes > kAgentAttachmentMaxBytes) {
+    result.error = "Binary attachment exceeds limit";
+    return result;
+  }
+  if (!ensureMessengerSessionSubscription(ctx, backgroundTick)) {
+    result.error = "Chat subscribe failed";
+    return result;
   }
 
-  if (!ensureMessengerSessionSubscription(ctx, backgroundTick)) {
-    return AgentAttachmentSendResult::Failed;
+  String checksumError;
+  const String checksum = computeFileSha256Hex(filePath, &checksumError);
+  if (checksum.isEmpty()) {
+    result.error = checksumError.isEmpty() ? String("Checksum failed") : checksumError;
+    return result;
   }
 
   const String sessionKey = activeMessengerSessionKey();
-  const String fileName = baseName(filePath);
-  const String attachmentId = makeMessageId(kind);
   const uint16_t totalChunks = static_cast<uint16_t>(
       (totalBytes + static_cast<uint32_t>(kAgentAttachmentChunkBytes) - 1U) /
       static_cast<uint32_t>(kAgentAttachmentChunkBytes));
+  if (totalChunks == 0 || totalChunks > kAgentAttachmentMaxChunks) {
+    result.error = "Chunk count out of range";
+    return result;
+  }
 
   sendChatSessionEvent(ctx, "chat.unsubscribe", sessionKey);
   gSubscribedSessionKey = "";
   gSubscribedConnectOkMs = 0;
+
+  ScopedProgressOverlay progress(ctx.uiRuntime,
+                                 attachmentUiTitle(kind),
+                                 "Preparing attachment...");
 
   File file = SD.open(filePath.c_str(), FILE_READ);
   if (!file || file.isDirectory()) {
@@ -849,7 +1183,8 @@ AgentAttachmentSendResult sendAttachmentViaAgentRequest(
       file.close();
     }
     ensureMessengerSessionSubscription(ctx, backgroundTick, false);
-    return AgentAttachmentSendResult::Failed;
+    result.error = "Attachment open failed";
+    return result;
   }
 
   std::vector<uint8_t> raw(kAgentAttachmentChunkBytes, 0);
@@ -857,11 +1192,51 @@ AgentAttachmentSendResult sendAttachmentViaAgentRequest(
   if (raw.empty() || encoded.empty()) {
     file.close();
     ensureMessengerSessionSubscription(ctx, backgroundTick, false);
-    return AgentAttachmentSendResult::Failed;
+    result.error = "Out of memory";
+    return result;
   }
 
-  bool failed = false;
+  String beginMessage;
+  beginMessage.reserve(caption.length() + 640U);
+  beginMessage += "[ATTACHMENT_BEGIN]\n";
+  beginMessage += "id:";
+  beginMessage += result.messageId;
+  beginMessage += "\nkind:";
+  beginMessage += attachmentKindToken(kind);
+  beginMessage += "\nname:";
+  beginMessage += result.fileName;
+  beginMessage += "\nmime:";
+  beginMessage += mimeType;
+  beginMessage += "\nsize:";
+  beginMessage += String(static_cast<unsigned long>(totalBytes));
+  beginMessage += "\nchunks:";
+  beginMessage += String(static_cast<unsigned long>(totalChunks));
+  beginMessage += "\nchecksum:";
+  beginMessage += checksum;
+  beginMessage += "\nencoding:base64";
+  if (!caption.isEmpty()) {
+    beginMessage += "\ncaption:";
+    beginMessage += caption;
+  }
+  beginMessage += "\nreply:ignore chunk transport and wait for END";
+
+  String sendError;
+  if (!sendAgentRequestMessage(ctx,
+                               sessionKey,
+                               target,
+                               beginMessage,
+                               backgroundTick,
+                               &sendError)) {
+    file.close();
+    ensureMessengerSessionSubscription(ctx, backgroundTick, false);
+    result.error = sendError.isEmpty() ? String("Attachment begin send failed") : sendError;
+    return result;
+  }
+
   uint16_t chunkIndex = 0;
+  int lastShownDecile = -1;
+  bool failed = false;
+
   while (file.available() && chunkIndex < totalChunks) {
     const size_t readLen = file.read(raw.data(), raw.size());
     if (readLen == 0) {
@@ -875,6 +1250,7 @@ AgentAttachmentSendResult sendAttachmentViaAgentRequest(
                       encoded.size(),
                       &encodedLen)) {
       failed = true;
+      sendError = "Base64 encode failed";
       break;
     }
 
@@ -882,31 +1258,35 @@ AgentAttachmentSendResult sendAttachmentViaAgentRequest(
     chunkMessage.reserve(encodedLen + 320U);
     chunkMessage += "[ATTACHMENT_CHUNK]\n";
     chunkMessage += "id:";
-    chunkMessage += attachmentId;
-    chunkMessage += "\nkind:";
-    chunkMessage += kind;
-    chunkMessage += "\nname:";
-    chunkMessage += fileName;
-    chunkMessage += "\nmime:";
-    chunkMessage += mimeType;
-    chunkMessage += "\nchunk:";
+    chunkMessage += result.messageId;
+    chunkMessage += "\nseq:";
     chunkMessage += String(static_cast<unsigned long>(chunkIndex + 1));
-    chunkMessage += "/";
+    chunkMessage += "\nchunks:";
     chunkMessage += String(static_cast<unsigned long>(totalChunks));
+    chunkMessage += "\nbytes:";
+    chunkMessage += String(static_cast<unsigned long>(readLen));
     chunkMessage += "\ndata:";
     chunkMessage += encoded.data();
-    chunkMessage += "\nReply with NO_REPLY only.";
+    chunkMessage += "\nreply:ignore";
 
     if (!sendAgentRequestMessage(ctx,
                                  sessionKey,
                                  target,
                                  chunkMessage,
-                                 backgroundTick)) {
+                                 backgroundTick,
+                                 &sendError)) {
       failed = true;
       break;
     }
 
     ++chunkIndex;
+    const int percent = static_cast<int>((static_cast<uint32_t>(chunkIndex) * 100U) /
+                                         static_cast<uint32_t>(totalChunks));
+    const int decile = percent / 10;
+    if (decile != lastShownDecile) {
+      lastShownDecile = decile;
+      progress.update("Sending attachment...", percent);
+    }
     if (backgroundTick && ((chunkIndex % 4U) == 0U)) {
       backgroundTick();
     }
@@ -915,163 +1295,154 @@ AgentAttachmentSendResult sendAttachmentViaAgentRequest(
 
   if (!failed && chunkIndex != totalChunks) {
     failed = true;
+    sendError = "Attachment chunks incomplete";
   }
 
   if (!ensureMessengerSessionSubscription(ctx, backgroundTick, false)) {
     failed = true;
+    if (sendError.isEmpty()) {
+      sendError = "Chat resubscribe failed";
+    }
   }
 
   if (failed) {
-    return AgentAttachmentSendResult::Failed;
+    result.error = sendError.isEmpty() ? String("Attachment chunk send failed") : sendError;
+    return result;
   }
 
-  String finalMessage;
-  finalMessage.reserve(caption.length() + 512U);
-  finalMessage += "[ATTACHMENT_COMPLETE]\n";
-  finalMessage += "id:";
-  finalMessage += attachmentId;
-  finalMessage += "\nkind:";
-  finalMessage += kind;
-  finalMessage += "\nname:";
-  finalMessage += fileName;
-  finalMessage += "\nmime:";
-  finalMessage += mimeType;
-  finalMessage += "\nsize:";
-  finalMessage += String(static_cast<unsigned long>(totalBytes));
-  finalMessage += "\nchunks:";
-  finalMessage += String(static_cast<unsigned long>(totalChunks));
+  String endMessage;
+  endMessage.reserve(caption.length() + 640U);
+  endMessage += "[ATTACHMENT_END]\n";
+  endMessage += "id:";
+  endMessage += result.messageId;
+  endMessage += "\nkind:";
+  endMessage += attachmentKindToken(kind);
+  endMessage += "\nname:";
+  endMessage += result.fileName;
+  endMessage += "\nmime:";
+  endMessage += mimeType;
+  endMessage += "\nsize:";
+  endMessage += String(static_cast<unsigned long>(totalBytes));
+  endMessage += "\nchunks:";
+  endMessage += String(static_cast<unsigned long>(totalChunks));
+  endMessage += "\nchecksum:";
+  endMessage += checksum;
   if (!caption.isEmpty()) {
-    finalMessage += "\ncaption:";
-    finalMessage += caption;
+    endMessage += "\ncaption:";
+    endMessage += caption;
   }
-  finalMessage +=
-      "\nDecode ATTACHMENT_CHUNK data with the same id and process it as one file.";
+  endMessage +=
+      "\nReconstruct ATTACHMENT_CHUNK parts with same id in order and process as one file.";
 
   if (!sendAgentRequestMessage(ctx,
                                sessionKey,
                                target,
-                               finalMessage,
-                               backgroundTick)) {
-    return AgentAttachmentSendResult::Failed;
+                               endMessage,
+                               backgroundTick,
+                               &sendError)) {
+    result.error = sendError.isEmpty() ? String("Attachment end send failed") : sendError;
+    return result;
   }
 
-  return AgentAttachmentSendResult::Sent;
+  progress.update("Attachment sent", 100);
+  result.ok = true;
+  result.route = AttachmentRoute::Framed;
+  return result;
 }
 
-bool sendVoiceFileMessage(AppContext &ctx,
-                          const String &filePath,
-                          const String &caption,
-                          const std::function<void()> &backgroundTick) {
-  if (!ensureGatewayReady(ctx, backgroundTick)) {
-    return false;
+AttachmentSendResult sendLegacyAttachmentChunks(
+    AppContext &ctx,
+    AttachmentKind kind,
+    const String &filePath,
+    const String &mimeType,
+    const String &target,
+    const String &caption,
+    uint32_t totalBytes,
+    const std::function<void()> &backgroundTick,
+    const char *metaEventName,
+    const char *chunkEventName) {
+  AttachmentSendResult result;
+  result.ok = false;
+  result.route = AttachmentRoute::Failed;
+  result.eventName = metaEventName ? String(metaEventName) : String();
+  result.mimeType = mimeType;
+  result.fileName = baseName(filePath);
+  result.totalBytes = totalBytes;
+  result.messageId = makeMessageId(attachmentKindToken(kind));
+
+  if (!metaEventName || !chunkEventName) {
+    result.error = "Legacy event is invalid";
+    return result;
   }
-
-  if (filePath.isEmpty()) {
-    ctx.uiRuntime->showToast("Voice", "Path is empty", 1300, backgroundTick);
-    return false;
-  }
-
-  const String target = defaultAgentId();
-
-  File file = SD.open(filePath.c_str(), FILE_READ);
-  if (!file || file.isDirectory()) {
-    if (file) {
-      file.close();
-    }
-    ctx.uiRuntime->showToast("Voice", "Open voice file failed", 1600, backgroundTick);
-    return false;
-  }
-
-  const uint32_t totalBytes = static_cast<uint32_t>(file.size());
   if (totalBytes == 0) {
-    file.close();
-    ctx.uiRuntime->showToast("Voice", "Voice file is empty", 1500, backgroundTick);
-    return false;
+    result.error = "Attachment is empty";
+    return result;
   }
-  if (totalBytes > kMaxVoiceBytes) {
-    file.close();
-    ctx.uiRuntime->showToast("Voice", "File too large (max 2MB)", 1800, backgroundTick);
-    return false;
+  const uint32_t legacyMaxBytes =
+      kind == AttachmentKind::Voice ? kMaxVoiceBytes : kMaxFileBytes;
+  if (totalBytes > legacyMaxBytes) {
+    result.error = "Legacy chunk payload too large";
+    return result;
   }
-
-  const String mimeType = detectAudioMime(filePath);
-  const uint64_t metaTs = currentUnixMs();
-
-  const AgentAttachmentSendResult agentSend = sendAttachmentViaAgentRequest(
-      ctx,
-      filePath,
-      mimeType,
-      "voice",
-      target,
-      caption,
-      totalBytes,
-      backgroundTick);
-  if (agentSend == AgentAttachmentSendResult::Sent) {
-    file.close();
-
-    GatewayInboxMessage sent;
-    sent.id = makeMessageId("voice");
-    sent.event = "agent.request";
-    sent.type = "voice";
-    sent.from = kMessageSenderId;
-    sent.to = target;
-    sent.text = caption;
-    sent.fileName = baseName(filePath);
-    sent.contentType = mimeType;
-    sent.voiceBytes = totalBytes;
-    sent.tsMs = metaTs;
-    pushOutbox(sent);
-
-    ctx.uiRuntime->showToast("Voice", "Voice sent", 1200, backgroundTick);
-    return true;
+  if (!ensureMessengerSessionSubscription(ctx, backgroundTick)) {
+    result.error = "Chat subscribe failed";
+    return result;
   }
 
   const uint16_t totalChunks = static_cast<uint16_t>(
       (totalBytes + static_cast<uint32_t>(kMessageChunkBytes) - 1U) /
       static_cast<uint32_t>(kMessageChunkBytes));
-  const String messageId = makeMessageId("voice");
-  if (!ensureMessengerSessionSubscription(ctx, backgroundTick)) {
-    file.close();
-    return false;
+  if (totalChunks == 0) {
+    result.error = "Chunk count out of range";
+    return result;
   }
-  const String sessionKey = activeMessengerSessionKey();
 
+  const String sessionKey = activeMessengerSessionKey();
   DynamicJsonDocument meta(2048);
-  meta["id"] = messageId;
+  meta["id"] = result.messageId;
   meta["from"] = kMessageSenderId;
   meta["to"] = target;
   meta["sessionKey"] = sessionKey;
-  meta["type"] = "voice";
-  meta["fileName"] = baseName(filePath);
+  meta["type"] = attachmentKindToken(kind);
+  meta["fileName"] = result.fileName;
   meta["contentType"] = mimeType;
   meta["size"] = totalBytes;
   meta["chunks"] = totalChunks;
   if (!caption.isEmpty()) {
     meta["text"] = caption;
   }
+  const uint64_t metaTs = currentUnixMs();
   if (metaTs > 0) {
     meta["ts"] = metaTs;
   }
 
-  if (!sendGatewayEventWithRetry(ctx, "msg.voice.meta", meta, backgroundTick)) {
-    file.close();
-    ctx.uiRuntime->showToast("Voice",
-                      withGatewayErrorSuffix("Voice meta send failed", ctx.gateway),
-                      1800,
-                      backgroundTick);
-    return false;
+  if (!sendGatewayEventWithRetry(ctx, metaEventName, meta, backgroundTick)) {
+    result.error = withGatewayErrorSuffix("Legacy meta send failed", ctx.gateway);
+    return result;
   }
 
+  File file = SD.open(filePath.c_str(), FILE_READ);
+  if (!file || file.isDirectory()) {
+    if (file) {
+      file.close();
+    }
+    result.error = "Attachment open failed";
+    return result;
+  }
+
+  ScopedProgressOverlay progress(ctx.uiRuntime, attachmentUiTitle(kind), "Legacy sending...");
   std::vector<uint8_t> raw(kMessageChunkBytes, 0);
   std::vector<char> encoded(kBase64ChunkBufferBytes, 0);
   if (raw.empty() || encoded.empty()) {
     file.close();
-    ctx.uiRuntime->showToast("Voice", "Out of memory", 1700, backgroundTick);
-    return false;
+    result.error = "Out of memory";
+    return result;
   }
 
   DynamicJsonDocument chunk(2048);
   uint16_t chunkIndex = 0;
+  int lastShownDecile = -1;
+  String sendError;
   while (file.available() && chunkIndex < totalChunks) {
     const size_t readLen = file.read(raw.data(), raw.size());
     if (readLen == 0) {
@@ -1079,13 +1450,12 @@ bool sendVoiceFileMessage(AppContext &ctx,
     }
 
     if (!encodeBase64(raw.data(), readLen, encoded.data(), encoded.size())) {
-      file.close();
-      ctx.uiRuntime->showToast("Voice", "Base64 encode failed", 1700, backgroundTick);
-      return false;
+      sendError = "Base64 encode failed";
+      break;
     }
 
     chunk.clear();
-    chunk["id"] = messageId;
+    chunk["id"] = result.messageId;
     chunk["from"] = kMessageSenderId;
     chunk["to"] = target;
     chunk["sessionKey"] = sessionKey;
@@ -1098,16 +1468,19 @@ bool sendVoiceFileMessage(AppContext &ctx,
       chunk["ts"] = chunkTs;
     }
 
-    if (!sendGatewayEventWithRetry(ctx, "msg.voice.chunk", chunk, backgroundTick)) {
-      file.close();
-      ctx.uiRuntime->showToast("Voice",
-                        withGatewayErrorSuffix("Voice chunk send failed", ctx.gateway),
-                        1800,
-                        backgroundTick);
-      return false;
+    if (!sendGatewayEventWithRetry(ctx, chunkEventName, chunk, backgroundTick)) {
+      sendError = withGatewayErrorSuffix("Legacy chunk send failed", ctx.gateway);
+      break;
     }
 
     ++chunkIndex;
+    const int percent = static_cast<int>((static_cast<uint32_t>(chunkIndex) * 100U) /
+                                         static_cast<uint32_t>(totalChunks));
+    const int decile = percent / 10;
+    if (decile != lastShownDecile) {
+      lastShownDecile = decile;
+      progress.update("Legacy sending...", percent);
+    }
     if (backgroundTick && ((chunkIndex % 8U) == 0U)) {
       backgroundTick();
     }
@@ -1115,28 +1488,201 @@ bool sendVoiceFileMessage(AppContext &ctx,
   file.close();
 
   if (chunkIndex != totalChunks) {
-    ctx.uiRuntime->showToast("Voice",
-                      withGatewayErrorSuffix("Voice send incomplete", ctx.gateway),
-                      1800,
-                      backgroundTick);
+    if (sendError.isEmpty()) {
+      sendError = "Legacy send incomplete";
+    }
+    result.error = sendError;
+    return result;
+  }
+
+  progress.update("Legacy attachment sent", 100);
+  result.ok = true;
+  result.route = AttachmentRoute::LegacyMetaChunk;
+  return result;
+}
+
+AttachmentSendResult sendLegacyFileChunks(
+    AppContext &ctx,
+    const String &filePath,
+    const String &mimeType,
+    const String &target,
+    const String &caption,
+    uint32_t totalBytes,
+    const std::function<void()> &backgroundTick) {
+  return sendLegacyAttachmentChunks(ctx,
+                                    AttachmentKind::File,
+                                    filePath,
+                                    mimeType,
+                                    target,
+                                    caption,
+                                    totalBytes,
+                                    backgroundTick,
+                                    "msg.file.meta",
+                                    "msg.file.chunk");
+}
+
+AttachmentSendResult sendLegacyVoiceChunks(
+    AppContext &ctx,
+    const String &filePath,
+    const String &mimeType,
+    const String &target,
+    const String &caption,
+    uint32_t totalBytes,
+    const std::function<void()> &backgroundTick) {
+  return sendLegacyAttachmentChunks(ctx,
+                                    AttachmentKind::Voice,
+                                    filePath,
+                                    mimeType,
+                                    target,
+                                    caption,
+                                    totalBytes,
+                                    backgroundTick,
+                                    "msg.voice.meta",
+                                    "msg.voice.chunk");
+}
+
+bool sendAttachmentMessage(AppContext &ctx,
+                           AttachmentKind kind,
+                           const String &filePath,
+                           const String &caption,
+                           const std::function<void()> &backgroundTick) {
+  const String uiTitle = attachmentUiTitle(kind);
+  if (filePath.isEmpty()) {
+    ctx.uiRuntime->showToast(uiTitle, "Path is empty", 1300, backgroundTick);
+    return false;
+  }
+
+  const String target = defaultAgentId();
+  const String mimeType =
+      kind == AttachmentKind::Voice ? detectAudioMime(filePath) : detectFileMime(filePath);
+
+  File file = SD.open(filePath.c_str(), FILE_READ);
+  if (!file || file.isDirectory()) {
+    if (file) {
+      file.close();
+    }
+    ctx.uiRuntime->showToast(uiTitle,
+                             kind == AttachmentKind::Voice ? "Open voice file failed"
+                                                           : "Open file failed",
+                             1600,
+                             backgroundTick);
+    return false;
+  }
+
+  const uint32_t totalBytes = static_cast<uint32_t>(file.size());
+  file.close();
+  if (totalBytes == 0) {
+    ctx.uiRuntime->showToast(uiTitle,
+                             kind == AttachmentKind::Voice ? "Voice file is empty"
+                                                           : "File is empty",
+                             1500,
+                             backgroundTick);
+    return false;
+  }
+
+  const uint32_t routeMaxBytes =
+      kind == AttachmentKind::Voice ? kMaxVoiceBytes : kMaxFileBytes;
+  if (totalBytes > routeMaxBytes) {
+    ctx.uiRuntime->showToast(uiTitle,
+                             kind == AttachmentKind::Voice ? "File too large (max 2MB)"
+                                                           : "File too large (max 4MB)",
+                             1800,
+                             backgroundTick);
+    return false;
+  }
+
+  bool framedPreferred = false;
+  String fallbackReason;
+  if (kind == AttachmentKind::Voice) {
+    framedPreferred = true;
+  } else if (isImageMimeType(mimeType)) {
+    framedPreferred = true;
+  } else {
+    fallbackReason = "Non-image file uses text fallback";
+  }
+
+  if (totalBytes > kMessengerBinaryAttachMaxBytes) {
+    framedPreferred = false;
+    fallbackReason = "Binary size exceeds framed route limit";
+  }
+
+  AttachmentSendResult sendResult;
+  if (framedPreferred) {
+    sendResult = sendAttachmentViaAgentRequest(ctx,
+                                               filePath,
+                                               mimeType,
+                                               kind,
+                                               target,
+                                               caption,
+                                               totalBytes,
+                                               backgroundTick);
+    if (!sendResult.ok && kLegacyMediaFallbackEnabled) {
+      if (kind == AttachmentKind::Voice) {
+        sendResult = sendLegacyVoiceChunks(ctx,
+                                           filePath,
+                                           mimeType,
+                                           target,
+                                           caption,
+                                           totalBytes,
+                                           backgroundTick);
+      } else {
+        sendResult = sendLegacyFileChunks(ctx,
+                                          filePath,
+                                          mimeType,
+                                          target,
+                                          caption,
+                                          totalBytes,
+                                          backgroundTick);
+      }
+    }
+  } else {
+    sendResult = sendAttachmentTextFallback(ctx,
+                                            kind,
+                                            filePath,
+                                            mimeType,
+                                            target,
+                                            caption,
+                                            totalBytes,
+                                            fallbackReason,
+                                            backgroundTick);
+  }
+
+  if (!sendResult.ok) {
+    String errorMessage = sendResult.error;
+    errorMessage.trim();
+    if (errorMessage.isEmpty()) {
+      errorMessage = "Send failed";
+    }
+    ctx.uiRuntime->showToast(uiTitle, errorMessage, 1900, backgroundTick);
     return false;
   }
 
   GatewayInboxMessage sent;
-  sent.id = messageId;
-  sent.event = "msg.voice.meta";
-  sent.type = "voice";
+  sent.id = sendResult.messageId.isEmpty() ? makeMessageId(attachmentKindToken(kind))
+                                           : sendResult.messageId;
+  sent.event = sendResult.eventName.isEmpty() ? "agent.request" : sendResult.eventName;
+  sent.type = attachmentKindToken(kind);
   sent.from = kMessageSenderId;
   sent.to = target;
   sent.text = caption;
-  sent.fileName = baseName(filePath);
-  sent.contentType = mimeType;
-  sent.voiceBytes = totalBytes;
-  sent.tsMs = metaTs;
+  sent.fileName = sendResult.fileName.isEmpty() ? baseName(filePath) : sendResult.fileName;
+  sent.contentType = sendResult.mimeType.isEmpty() ? mimeType : sendResult.mimeType;
+  sent.voiceBytes = sendResult.totalBytes > 0 ? sendResult.totalBytes : totalBytes;
+  sent.tsMs = currentUnixMs();
   pushOutbox(sent);
 
-  ctx.uiRuntime->showToast("Voice", "Voice sent", 1200, backgroundTick);
+  ctx.uiRuntime->showToast(uiTitle, attachmentRouteToast(sendResult.route), 1300, backgroundTick);
   return true;
+}
+
+bool sendVoiceFileMessage(AppContext &ctx,
+                          const String &filePath,
+                          const String &caption,
+                          const std::function<void()> &backgroundTick) {
+  if (!ensureGatewayReady(ctx, backgroundTick)) {
+    return false;
+  }
+  return sendAttachmentMessage(ctx, AttachmentKind::Voice, filePath, caption, backgroundTick);
 }
 
 void sendVoiceMessage(AppContext &ctx,
@@ -1337,176 +1883,12 @@ void sendFileMessage(AppContext &ctx,
     return;
   }
 
-  const String target = defaultAgentId();
   String caption;
   if (!ctx.uiRuntime->textInput("Message(optional)", caption, false, backgroundTick)) {
     return;
   }
   caption.trim();
-
-  File file = SD.open(filePath.c_str(), FILE_READ);
-  if (!file || file.isDirectory()) {
-    if (file) {
-      file.close();
-    }
-    ctx.uiRuntime->showToast("File", "Open file failed", 1600, backgroundTick);
-    return;
-  }
-
-  const uint32_t totalBytes = static_cast<uint32_t>(file.size());
-  if (totalBytes == 0) {
-    file.close();
-    ctx.uiRuntime->showToast("File", "File is empty", 1500, backgroundTick);
-    return;
-  }
-  if (totalBytes > kMaxFileBytes) {
-    file.close();
-    ctx.uiRuntime->showToast("File", "File too large (max 4MB)", 1800, backgroundTick);
-    return;
-  }
-
-  const String mimeType = detectFileMime(filePath);
-  const uint64_t metaTs = currentUnixMs();
-
-  const AgentAttachmentSendResult agentSend = sendAttachmentViaAgentRequest(
-      ctx,
-      filePath,
-      mimeType,
-      "file",
-      target,
-      caption,
-      totalBytes,
-      backgroundTick);
-  if (agentSend == AgentAttachmentSendResult::Sent) {
-    file.close();
-
-    GatewayInboxMessage sent;
-    sent.id = makeMessageId("file");
-    sent.event = "agent.request";
-    sent.type = "file";
-    sent.from = kMessageSenderId;
-    sent.to = target;
-    sent.text = caption;
-    sent.fileName = baseName(filePath);
-    sent.contentType = mimeType;
-    sent.voiceBytes = totalBytes;
-    sent.tsMs = metaTs;
-    pushOutbox(sent);
-
-    ctx.uiRuntime->showToast("File", "File sent", 1200, backgroundTick);
-    return;
-  }
-
-  const uint16_t totalChunks = static_cast<uint16_t>(
-      (totalBytes + static_cast<uint32_t>(kMessageChunkBytes) - 1U) /
-      static_cast<uint32_t>(kMessageChunkBytes));
-  const String messageId = makeMessageId("file");
-  if (!ensureMessengerSessionSubscription(ctx, backgroundTick)) {
-    file.close();
-    return;
-  }
-  const String sessionKey = activeMessengerSessionKey();
-
-  DynamicJsonDocument meta(2048);
-  meta["id"] = messageId;
-  meta["from"] = kMessageSenderId;
-  meta["to"] = target;
-  meta["sessionKey"] = sessionKey;
-  meta["type"] = "file";
-  meta["fileName"] = baseName(filePath);
-  meta["contentType"] = mimeType;
-  meta["size"] = totalBytes;
-  meta["chunks"] = totalChunks;
-  if (!caption.isEmpty()) {
-    meta["text"] = caption;
-  }
-  if (metaTs > 0) {
-    meta["ts"] = metaTs;
-  }
-
-  if (!sendGatewayEventWithRetry(ctx, "msg.file.meta", meta, backgroundTick)) {
-    file.close();
-    ctx.uiRuntime->showToast("File",
-                      withGatewayErrorSuffix("File meta send failed", ctx.gateway),
-                      1800,
-                      backgroundTick);
-    return;
-  }
-
-  std::vector<uint8_t> raw(kMessageChunkBytes, 0);
-  std::vector<char> encoded(kBase64ChunkBufferBytes, 0);
-  if (raw.empty() || encoded.empty()) {
-    file.close();
-    ctx.uiRuntime->showToast("File", "Out of memory", 1700, backgroundTick);
-    return;
-  }
-
-  DynamicJsonDocument chunk(2048);
-  uint16_t chunkIndex = 0;
-  while (file.available() && chunkIndex < totalChunks) {
-    const size_t readLen = file.read(raw.data(), raw.size());
-    if (readLen == 0) {
-      break;
-    }
-
-    if (!encodeBase64(raw.data(), readLen, encoded.data(), encoded.size())) {
-      file.close();
-      ctx.uiRuntime->showToast("File", "Base64 encode failed", 1700, backgroundTick);
-      return;
-    }
-
-    chunk.clear();
-    chunk["id"] = messageId;
-    chunk["from"] = kMessageSenderId;
-    chunk["to"] = target;
-    chunk["sessionKey"] = sessionKey;
-    chunk["seq"] = static_cast<uint32_t>(chunkIndex + 1);
-    chunk["chunks"] = totalChunks;
-    chunk["last"] = (chunkIndex + 1) >= totalChunks;
-    chunk["data"] = encoded.data();
-    const uint64_t chunkTs = currentUnixMs();
-    if (chunkTs > 0) {
-      chunk["ts"] = chunkTs;
-    }
-
-    if (!sendGatewayEventWithRetry(ctx, "msg.file.chunk", chunk, backgroundTick)) {
-      file.close();
-      ctx.uiRuntime->showToast("File",
-                        withGatewayErrorSuffix("File chunk send failed", ctx.gateway),
-                        1800,
-                        backgroundTick);
-      return;
-    }
-
-    ++chunkIndex;
-    if (backgroundTick && ((chunkIndex % 8U) == 0U)) {
-      backgroundTick();
-    }
-  }
-  file.close();
-
-  if (chunkIndex != totalChunks) {
-    ctx.uiRuntime->showToast("File",
-                      withGatewayErrorSuffix("File send incomplete", ctx.gateway),
-                      1800,
-                      backgroundTick);
-    return;
-  }
-
-  GatewayInboxMessage sent;
-  sent.id = messageId;
-  sent.event = "msg.file.meta";
-  sent.type = "file";
-  sent.from = kMessageSenderId;
-  sent.to = target;
-  sent.text = caption;
-  sent.fileName = baseName(filePath);
-  sent.contentType = mimeType;
-  sent.voiceBytes = totalBytes;
-  sent.tsMs = metaTs;
-  pushOutbox(sent);
-
-  ctx.uiRuntime->showToast("File", "File sent", 1200, backgroundTick);
+  sendAttachmentMessage(ctx, AttachmentKind::File, filePath, caption, backgroundTick);
 }
 
 String makeChatPreview(const ChatEntry &entry) {

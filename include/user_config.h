@@ -29,6 +29,15 @@
 #define USER_OPENCLAW_INSTANCE_ID "t-embed-cc1101"
 // All outgoing chat/file messages are routed to this OpenClaw agent.
 #define USER_OPENCLAW_DEFAULT_AGENT_ID "default"
+// Messenger attachment routing policy (node role safe defaults).
+// 0: Disable legacy msg.file/msg.voice meta+chunk fallback (recommended)
+// 1: Enable legacy fallback when framed agent.request transfer fails.
+#define USER_MESSENGER_ENABLE_LEGACY_MEDIA_FALLBACK 0
+// Max binary bytes for agent.request framed attachments.
+// Larger payloads auto-fallback to metadata text message.
+#define USER_MESSENGER_BINARY_ATTACH_MAX_BYTES 524288U
+// Max preview chars included in text fallback for text-like files.
+#define USER_MESSENGER_TEXT_FALLBACK_PREVIEW_MAX_CHARS 4000U
 
 // CC1101 defaults
 #define USER_DEFAULT_RF_FREQUENCY_MHZ 433.92f
