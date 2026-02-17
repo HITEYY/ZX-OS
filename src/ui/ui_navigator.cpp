@@ -4,7 +4,6 @@
 
 #include "../apps/app_market_app.h"
 #include "../apps/file_explorer_app.h"
-#include "../apps/openclaw_app.h"
 #include "../apps/settings_app.h"
 #include "i18n.h"
 #include "ui_runtime.h"
@@ -21,7 +20,6 @@ void UiNavigator::runLauncher(AppContext &ctx,
   items.push_back(uiText(lang, UiTextKey::AppMarket));
   items.push_back(uiText(lang, UiTextKey::Settings));
   items.push_back(uiText(lang, UiTextKey::FileExplorer));
-  items.push_back(uiText(lang, UiTextKey::OpenClaw));
 
   ctx.uiRuntime->setStatusLine("");
 
@@ -40,7 +38,5 @@ void UiNavigator::runLauncher(AppContext &ctx,
     runSettingsApp(ctx, backgroundTick);
   } else if (choice == 2) {
     runFileExplorerApp(ctx, backgroundTick);
-  } else if (choice == 3) {
-    runOpenClawApp(ctx, backgroundTick);
   }
 }
