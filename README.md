@@ -34,8 +34,8 @@ LilyGo T-Embed CC1101 보드를 OpenClaw Remote Gateway에 `node`로 연결하�
   - 텍스트 요청: `agent.request` (`node.event`)
   - 채팅 세션 구독: `chat.subscribe` / `chat.unsubscribe` (`node.event`)
   - 채팅 스트림 수신: `chat` (delta/final/error)
-  - 파일/음성 첨부(기본): `agent.request` 텍스트 프레이밍(`[ATTACHMENT_BEGIN]` / `[ATTACHMENT_CHUNK]` / `[ATTACHMENT_END]`)
-  - `node` role 제약상 `chat.send + attachments`(`operator.write`) 직접 호출은 사용하지 않음
+  - 파일/음성 첨부(기본): `chat.send` + `attachments` (base64 payload, 소용량 우선)
+  - 첨부가 큰 경우: `agent.request` 텍스트 프레이밍(`[ATTACHMENT_BEGIN]` / `[ATTACHMENT_CHUNK]` / `[ATTACHMENT_END]`) 폴백
   - 레거시 미디어 이벤트(`msg.file.meta/chunk`, `msg.voice.meta/chunk`)는 컴파일 옵션으로만 사용
 - Messenger 발신 대상 고정: `USER_OPENCLAW_DEFAULT_AGENT_ID` (기본값 `default`)
 - 설정 영구 저장(SD: `/oc_cfg.json`, NVS 백업: namespace `oc_cfg`)
@@ -208,7 +208,8 @@ git push origin v1.0.0
   - 내부적으로 `agent.request` + `chat.subscribe`를 사용해 Agent 실시간 응답 수신
 - `Send File (SD)`: SD 일반 파일 전송(최대 4MB)
   - 라우팅 정책:
-    - `image/*` + 512KB 이하: `agent.request` framed
+    - 96KB 이하: `chat.send` + `attachments`
+    - 이미지(`image/*`) + 512KB 이하: `agent.request` framed
     - 비이미지(`pdf/zip/bin/json/txt` 등): text fallback
     - 512KB 초과: text fallback
     - framed 실패 시: `USER_MESSENGER_ENABLE_LEGACY_MEDIA_FALLBACK=1`일 때만 `msg.file.meta/chunk`
@@ -218,7 +219,8 @@ git push origin v1.0.0
   - 녹음 시간 입력 없이 `OK` 또는 `BACK` 버튼으로 녹음 종료
 - `Send Voice File (SD)`: SD 오디오 파일(`.wav/.mp3/.m4a/.aac/.opus/.ogg`) 전송(최대 2MB)
   - 라우팅 정책:
-    - 512KB 이하: `agent.request` framed
+    - 96KB 이하: `chat.send` + `attachments`
+    - 96KB 초과 ~ 512KB 이하: `agent.request` framed
     - 512KB 초과: text fallback
     - framed 실패 시: `USER_MESSENGER_ENABLE_LEGACY_MEDIA_FALLBACK=1`일 때만 `msg.voice.meta/chunk`
 - 채팅 로그: 송신/수신 메시지 통합 보기 + 상세 보기 + 로그 삭제

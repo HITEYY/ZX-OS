@@ -51,6 +51,7 @@ constexpr bool kLegacyMediaFallbackEnabled =
 constexpr size_t kAgentRequestMessageMaxChars = 19000U;
 constexpr uint32_t kMaxVoiceBytes = 2097152;
 constexpr uint32_t kMaxFileBytes = 4194304;
+constexpr uint32_t kChatSendAttachmentMaxBytes = 98304;
 constexpr uint8_t kChunkSendMaxRetries = 3;
 constexpr unsigned long kChunkRetryWaitMs = 2500UL;
 constexpr size_t kOutboxCapacity = 40;
@@ -84,10 +85,11 @@ enum class AttachmentKind : uint8_t {
 };
 
 enum class AttachmentRoute : uint8_t {
-  Framed = 0,
-  TextFallback = 1,
-  LegacyMetaChunk = 2,
-  Failed = 3,
+  ApiAttachment = 0,
+  Framed = 1,
+  TextFallback = 2,
+  LegacyMetaChunk = 3,
+  Failed = 4,
 };
 
 struct AttachmentSendResult {
@@ -175,6 +177,9 @@ String attachmentUiTitle(AttachmentKind kind) {
 }
 
 String attachmentRouteToast(AttachmentRoute route) {
+  if (route == AttachmentRoute::ApiAttachment) {
+    return "Sent (chat.send attachment)";
+  }
   if (route == AttachmentRoute::Framed) {
     return "Sent (framed)";
   }
@@ -1350,6 +1355,110 @@ AttachmentSendResult sendAttachmentViaAgentRequest(
   return result;
 }
 
+const char *chatSendAttachmentType(AttachmentKind kind, const String &mimeType) {
+  if (kind == AttachmentKind::Voice) {
+    return "audio";
+  }
+  return isImageMimeType(mimeType) ? "image" : "file";
+}
+
+AttachmentSendResult sendAttachmentViaChatSend(
+    AppContext &ctx,
+    const String &filePath,
+    const String &mimeType,
+    AttachmentKind kind,
+    const String &target,
+    const String &caption,
+    uint32_t totalBytes,
+    const std::function<void()> &backgroundTick) {
+  AttachmentSendResult result;
+  result.ok = false;
+  result.route = AttachmentRoute::Failed;
+  result.eventName = "chat.send";
+  result.mimeType = mimeType;
+  result.fileName = baseName(filePath);
+  result.totalBytes = totalBytes;
+  result.messageId = makeMessageId(attachmentKindToken(kind));
+
+  if (totalBytes == 0 || totalBytes > kChatSendAttachmentMaxBytes) {
+    result.error = "Attachment too large for chat.send";
+    return result;
+  }
+  if (!ensureMessengerSessionSubscription(ctx, backgroundTick)) {
+    result.error = "Chat subscribe failed";
+    return result;
+  }
+
+  File file = SD.open(filePath.c_str(), FILE_READ);
+  if (!file || file.isDirectory()) {
+    if (file) {
+      file.close();
+    }
+    result.error = "Attachment open failed";
+    return result;
+  }
+
+  std::vector<uint8_t> raw(kMessageChunkBytes, 0);
+  std::vector<char> encoded(kBase64ChunkBufferBytes, 0);
+  if (raw.empty() || encoded.empty()) {
+    file.close();
+    result.error = "Out of memory";
+    return result;
+  }
+
+  String base64;
+  const size_t expectedEncoded = base64_encode_expected_len(totalBytes);
+  base64.reserve(expectedEncoded + 16U);
+
+  while (file.available()) {
+    const size_t readLen = file.read(raw.data(), raw.size());
+    if (readLen == 0) {
+      file.close();
+      result.error = "Attachment read failed";
+      return result;
+    }
+    if (!encodeBase64(raw.data(), readLen, encoded.data(), encoded.size())) {
+      file.close();
+      result.error = "Base64 encode failed";
+      return result;
+    }
+    base64 += encoded.data();
+  }
+  file.close();
+
+  String message = caption;
+  message.trim();
+  if (message.isEmpty()) {
+    message = "See attached.";
+  }
+
+  size_t payloadCap = base64.length() + message.length() + 1024U;
+  if (payloadCap < 2048U) {
+    payloadCap = 2048U;
+  }
+
+  DynamicJsonDocument payload(payloadCap);
+  payload["message"] = message;
+  payload["sessionKey"] = activeMessengerSessionKey();
+  payload["to"] = target;
+  payload["thinking"] = "low";
+  JsonArray attachments = payload.createNestedArray("attachments");
+  JsonObject attachment = attachments.createNestedObject();
+  attachment["type"] = chatSendAttachmentType(kind, mimeType);
+  attachment["mimeType"] = mimeType;
+  attachment["fileName"] = result.fileName;
+  attachment["content"] = base64;
+
+  if (!sendGatewayEventWithRetry(ctx, "chat.send", payload, backgroundTick)) {
+    result.error = withGatewayErrorSuffix("chat.send attachment failed", ctx.gateway);
+    return result;
+  }
+
+  result.ok = true;
+  result.route = AttachmentRoute::ApiAttachment;
+  return result;
+}
+
 AttachmentSendResult sendLegacyAttachmentChunks(
     AppContext &ctx,
     AttachmentKind kind,
@@ -1607,7 +1716,18 @@ bool sendAttachmentMessage(AppContext &ctx,
   }
 
   AttachmentSendResult sendResult;
-  if (framedPreferred) {
+  if (totalBytes <= kChatSendAttachmentMaxBytes) {
+    sendResult = sendAttachmentViaChatSend(ctx,
+                                           filePath,
+                                           mimeType,
+                                           kind,
+                                           target,
+                                           caption,
+                                           totalBytes,
+                                           backgroundTick);
+  }
+
+  if (!sendResult.ok && framedPreferred) {
     sendResult = sendAttachmentViaAgentRequest(ctx,
                                                filePath,
                                                mimeType,
@@ -1635,7 +1755,9 @@ bool sendAttachmentMessage(AppContext &ctx,
                                           backgroundTick);
       }
     }
-  } else {
+  }
+
+  if (!sendResult.ok && !framedPreferred) {
     sendResult = sendAttachmentTextFallback(ctx,
                                             kind,
                                             filePath,
