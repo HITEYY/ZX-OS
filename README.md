@@ -1,41 +1,62 @@
 # ZX-OS (T-Embed CC1101)
 
-ZX-OS는 LilyGo **T-Embed CC1101** 보드에서 동작하는 임베디드 펌웨어입니다.
-기존 OpenClaw 기반 기능을 포함하며, 게이트웨이 연결/무선 제어/UI 앱 실행을 지원합니다.
+ZX-OS is embedded firmware for the LilyGO **T-Embed CC1101** board.
+It combines a launcher-based LVGL UI with wireless tooling, OpenClaw gateway integration, SD-card workflows, and OTA-style firmware/app package management.
 
-## 주요 특징
+## What this project provides
 
-- OS/장치 기본 이름을 **ZX-OS Node**로 사용
-- LVGL 기반 런처 UI
-- OpenClaw Gateway 연동 (`ws://`, `wss://`)
-- RF(CC1101), NFC, RFID, NRF24 앱 제공
-- SD 기반 설정 저장 및 펌웨어 업데이트 지원
+- A touchless launcher UX optimized for the T-Embed encoder + buttons.
+- Configuration persistence across reboot (SD + NVS fallback).
+- OpenClaw gateway connectivity (`ws://` and `wss://`) with token/password auth.
+- Wireless modules and utility apps (RF/CC1101, NFC, RFID, NRF24, BLE).
+- SD-card utilities including browsing, previewing media, and package-based updates.
 
-## 빌드
+> For full feature details and developer workflows, read:
+>
+> - `docs/FEATURES.md`
+> - `docs/APP_DEVELOPMENT_GUIDE.md`
+
+## Quick start
+
+### 1) Build
 
 ```bash
 pio run -e t-embed-cc1101
 ```
 
-## 업로드
+### 2) Upload
 
 ```bash
 pio run -e t-embed-cc1101 -t upload
 ```
 
-## 시리얼 모니터
+### 3) Serial monitor
 
 ```bash
 pio device monitor -b 115200
 ```
 
-## 프로젝트 구조
+## Hardware/software stack
 
-- `src/main.cpp`: 시스템 부트스트랩/런처 시작
-- `src/core/*`: 런타임 설정, 게이트웨이, 무선/통신 핵심 로직
-- `src/apps/*`: 기능별 앱 구현
-- `src/ui/*`: LVGL UI 및 입력 어댑터
+- **MCU/Board**: ESP32-S3 (LilyGO T-Embed CC1101)
+- **Framework**: Arduino (PlatformIO)
+- **UI**: LVGL + TFT_eSPI
+- **Connectivity**: Wi-Fi, BLE, WebSocket gateway
+- **Storage**: NVS + SD card
 
-## 라이선스
+## Project structure
 
-MIT License (`LICENSE` 참고)
+- `src/main.cpp`: boot, lifecycle, sleep/watchdog handling, service wiring.
+- `src/core/*`: configuration, gateway, Wi-Fi, BLE, radio abstraction, shared buses.
+- `src/ui/*`: LVGL runtime, input adapter, i18n, launcher/navigation.
+- `src/apps/*`: app implementations (launcher apps + module apps).
+- `docs/*`: architecture and feature documentation for faster app development.
+
+## Documentation map
+
+- **Feature reference**: `docs/FEATURES.md`
+- **Developer onboarding / app extension guide**: `docs/APP_DEVELOPMENT_GUIDE.md`
+
+## License
+
+MIT License. See `LICENSE`.
