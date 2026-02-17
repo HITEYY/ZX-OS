@@ -33,10 +33,10 @@ constexpr const char *kDefaultSessionKey = "agent:main:main";
 constexpr size_t kMessageChunkBytes = 256;
 constexpr size_t kBase64ChunkBufferBytes =
     ((kMessageChunkBytes + 2U) / 3U) * 4U + 1U;
-constexpr size_t kAgentAttachmentChunkBytes = 3072;
+constexpr size_t kAgentAttachmentChunkBytes = 3840;
 constexpr size_t kAgentAttachmentBase64ChunkBytes =
     ((kAgentAttachmentChunkBytes + 2U) / 3U) * 4U + 1U;
-constexpr uint16_t kAgentAttachmentMaxChunks = 80;
+constexpr uint16_t kAgentAttachmentMaxChunks = 1200;
 constexpr uint32_t kAgentAttachmentMaxBytes =
     static_cast<uint32_t>(kAgentAttachmentChunkBytes) *
     static_cast<uint32_t>(kAgentAttachmentMaxChunks);
@@ -792,6 +792,7 @@ void sendTextMessage(AppContext &ctx,
 
 bool sendAgentRequestMessage(AppContext &ctx,
                              const String &sessionKey,
+                             const String &target,
                              const String &message,
                              const std::function<void()> &backgroundTick) {
   if (message.isEmpty()) {
@@ -806,6 +807,9 @@ bool sendAgentRequestMessage(AppContext &ctx,
   DynamicJsonDocument payload(payloadCap);
   payload["message"] = message;
   payload["sessionKey"] = sessionKey;
+  if (!target.isEmpty()) {
+    payload["to"] = target;
+  }
   payload["deliver"] = false;
   payload["thinking"] = "low";
   return sendGatewayEventWithRetry(ctx, "agent.request", payload, backgroundTick);
@@ -816,6 +820,7 @@ AgentAttachmentSendResult sendAttachmentViaAgentRequest(
     const String &filePath,
     const String &mimeType,
     const char *kind,
+    const String &target,
     const String &caption,
     uint32_t totalBytes,
     const std::function<void()> &backgroundTick) {
@@ -892,7 +897,11 @@ AgentAttachmentSendResult sendAttachmentViaAgentRequest(
     chunkMessage += encoded.data();
     chunkMessage += "\nReply with NO_REPLY only.";
 
-    if (!sendAgentRequestMessage(ctx, sessionKey, chunkMessage, backgroundTick)) {
+    if (!sendAgentRequestMessage(ctx,
+                                 sessionKey,
+                                 target,
+                                 chunkMessage,
+                                 backgroundTick)) {
       failed = true;
       break;
     }
@@ -938,7 +947,11 @@ AgentAttachmentSendResult sendAttachmentViaAgentRequest(
   finalMessage +=
       "\nDecode ATTACHMENT_CHUNK data with the same id and process it as one file.";
 
-  if (!sendAgentRequestMessage(ctx, sessionKey, finalMessage, backgroundTick)) {
+  if (!sendAgentRequestMessage(ctx,
+                               sessionKey,
+                               target,
+                               finalMessage,
+                               backgroundTick)) {
     return AgentAttachmentSendResult::Failed;
   }
 
@@ -989,6 +1002,7 @@ bool sendVoiceFileMessage(AppContext &ctx,
       filePath,
       mimeType,
       "voice",
+      target,
       caption,
       totalBytes,
       backgroundTick);
@@ -1000,7 +1014,7 @@ bool sendVoiceFileMessage(AppContext &ctx,
     sent.event = "agent.request";
     sent.type = "voice";
     sent.from = kMessageSenderId;
-    sent.to = kDefaultSessionAgentId;
+    sent.to = target;
     sent.text = caption;
     sent.fileName = baseName(filePath);
     sent.contentType = mimeType;
@@ -1359,6 +1373,7 @@ void sendFileMessage(AppContext &ctx,
       filePath,
       mimeType,
       "file",
+      target,
       caption,
       totalBytes,
       backgroundTick);
@@ -1370,7 +1385,7 @@ void sendFileMessage(AppContext &ctx,
     sent.event = "agent.request";
     sent.type = "file";
     sent.from = kMessageSenderId;
-    sent.to = kDefaultSessionAgentId;
+    sent.to = target;
     sent.text = caption;
     sent.fileName = baseName(filePath);
     sent.contentType = mimeType;
