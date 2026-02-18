@@ -4,7 +4,7 @@
 #include <Wire.h>
 #include <driver/rtc_io.h>
 #include <esp_heap_caps.h>
-#include <esp_reset_reason.h>
+#include <esp_system.h>
 #include <esp_sleep.h>
 
 #define XPOWERS_CHIP_BQ25896
