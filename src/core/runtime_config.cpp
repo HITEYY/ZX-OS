@@ -488,14 +488,36 @@ bool isValidGithubRepoSlug(const String &repoSlug) {
   if (repoSlug.isEmpty()) {
     return true;
   }
-  const int slash = repoSlug.indexOf('/');
-  if (slash <= 0 || slash >= static_cast<int>(repoSlug.length()) - 1) {
+
+  const String value = trimAndUnquote(repoSlug);
+  const int slash = value.indexOf('/');
+  if (slash <= 0 || slash >= static_cast<int>(value.length()) - 1) {
     return false;
   }
-  if (repoSlug.indexOf('/', static_cast<unsigned int>(slash + 1)) >= 0) {
+
+  if (value.indexOf('/', static_cast<unsigned int>(slash + 1)) >= 0) {
     return false;
   }
-  return true;
+
+  auto isValidPart = [](const String &part) {
+    if (part.isEmpty()) {
+      return false;
+    }
+    for (size_t i = 0; i < part.length(); ++i) {
+      const char c = part[static_cast<unsigned int>(i)];
+      const bool isAlnum = (c >= '0' && c <= '9') ||
+                           (c >= 'a' && c <= 'z') ||
+                           (c >= 'A' && c <= 'Z');
+      if (!isAlnum && c != '.' && c != '_' && c != '-') {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  const String owner = value.substring(0, static_cast<unsigned int>(slash));
+  const String repo = value.substring(static_cast<unsigned int>(slash + 1));
+  return isValidPart(owner) && isValidPart(repo);
 }
 
 bool isValidUiLanguageCode(const String &langCode) {
