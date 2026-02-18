@@ -543,6 +543,7 @@ void toJson(const RuntimeConfig &config, JsonObject obj) {
   obj["appMarketGithubRepo"] = config.appMarketGithubRepo;
   obj["appMarketReleaseAsset"] = config.appMarketReleaseAsset;
   obj["uiLanguage"] = config.uiLanguage;
+  obj["koreanFontInstalled"] = config.koreanFontInstalled;
   obj["timezoneTz"] = config.timezoneTz;
   obj["displayBrightnessPercent"] = config.displayBrightnessPercent;
 }
@@ -582,6 +583,7 @@ void fromJson(const JsonObjectConst &obj, RuntimeConfig &config) {
       String(static_cast<const char *>(obj["appMarketReleaseAsset"] |
                                        USER_APPMARKET_RELEASE_ASSET));
   config.uiLanguage = String(static_cast<const char *>(obj["uiLanguage"] | "en"));
+  config.koreanFontInstalled = obj["koreanFontInstalled"] | false;
   config.timezoneTz =
       String(static_cast<const char *>(obj["timezoneTz"] | USER_TIMEZONE_TZ));
   config.displayBrightnessPercent = sanitizeDisplayBrightnessPercent(
@@ -902,6 +904,10 @@ bool resetConfig(String *error) {
   }
 
   return true;
+}
+
+bool isKoreanFontInstalled(const RuntimeConfig &config) {
+  return config.koreanFontInstalled;
 }
 
 const char *gatewayAuthModeName(GatewayAuthMode mode) {

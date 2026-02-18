@@ -318,7 +318,10 @@ void setup() {
   if (!loadConfig(gAppContext.config, &configLoadSource, nullptr, &loadErr)) {
     gAppContext.config = makeDefaultConfig();
   }
-  Serial.printf("[boot] cfg.uiLanguage=%s\n", gAppContext.config.uiLanguage.c_str());
+  Serial.printf("[boot] cfg.uiLanguage=%s koreanFont=%d\n",
+                gAppContext.config.uiLanguage.c_str(),
+                gAppContext.config.koreanFontInstalled ? 1 : 0);
+  gUiRuntime.setKoreanFontInstalled(gAppContext.config.koreanFontInstalled);
   gUiRuntime.setLanguage(uiLanguageFromConfigCode(gAppContext.config.uiLanguage));
   gUiRuntime.setTimezone(gAppContext.config.timezoneTz);
   gUiRuntime.setDisplayBrightnessPercent(gAppContext.config.displayBrightnessPercent);

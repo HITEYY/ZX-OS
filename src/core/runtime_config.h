@@ -29,6 +29,7 @@ struct RuntimeConfig {
   String appMarketGithubRepo;
   String appMarketReleaseAsset;
   String uiLanguage = "en";
+  bool koreanFontInstalled = false;
   String timezoneTz = "UTC0";
   uint8_t displayBrightnessPercent = USER_DISPLAY_BRIGHTNESS_PERCENT;
 };
@@ -51,5 +52,7 @@ bool loadConfig(RuntimeConfig &outConfig,
                 String *error = nullptr);
 bool saveConfig(const RuntimeConfig &config, String *error = nullptr);
 bool resetConfig(String *error = nullptr);
+
+bool isKoreanFontInstalled(const RuntimeConfig &config);
 
 const char *gatewayAuthModeName(GatewayAuthMode mode);
