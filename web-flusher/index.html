@@ -418,15 +418,62 @@
   <div class="banner info">
     <span class="icon">ℹ</span>
     <span>
-      릴리즈된 ZX-OS 펌웨어를 USB로 연결된 T-Embed CC1101 장치에 직접 플래시합니다.
+      릴리즈된 ZX-OS 펌웨어를 USB로 연결된 장치에 직접 플래시합니다.
       기존 설정(WiFi, OpenClaw 등)은 NVS에 보존됩니다.
     </span>
   </div>
 
-  <!-- ─── STEP 1: 릴리즈 선택 ─── -->
+  <!-- ─── STEP 1: 보드 선택 ─── -->
   <div class="card">
     <div class="card-header">
-      <div class="step-badge" id="step1-badge">1</div>
+      <div class="step-badge" id="step0-badge">1</div>
+      <h2>보드 선택</h2>
+    </div>
+    <div class="card-body">
+      <div id="board-selector" style="display:flex;flex-direction:column;gap:8px">
+        <div class="release-item selected" data-board="t-embed-cc1101" data-chip="ESP32-S3" onclick="selectBoard(this)">
+          <div class="ri-radio"></div>
+          <div class="ri-info">
+            <div class="ri-tag">LilyGo T-Embed CC1101</div>
+            <div class="ri-meta">ESP32-S3 · 170×320 ST7789 · CC1101 내장</div>
+          </div>
+        </div>
+        <div class="release-item" data-board="t-deck" data-chip="ESP32-S3" onclick="selectBoard(this)">
+          <div class="ri-radio"></div>
+          <div class="ri-info">
+            <div class="ri-tag">LilyGo T-Deck</div>
+            <div class="ri-meta">ESP32-S3 · 320×240 ST7789 · 키보드 + 트랙볼</div>
+          </div>
+        </div>
+        <div class="release-item" data-board="cardputer" data-chip="ESP32-S3" onclick="selectBoard(this)">
+          <div class="ri-radio"></div>
+          <div class="ri-info">
+            <div class="ri-tag">M5Stack Cardputer</div>
+            <div class="ri-meta">ESP32-S3 · 240×135 ST7789 · 내장 키보드</div>
+          </div>
+        </div>
+        <div class="release-item" data-board="cyd-2432s028" data-chip="ESP32" onclick="selectBoard(this)">
+          <div class="ri-radio"></div>
+          <div class="ri-info">
+            <div class="ri-tag">CYD ESP32-2432S028</div>
+            <div class="ri-meta">ESP32 · 320×240 ILI9341 · 터치스크린</div>
+          </div>
+        </div>
+        <div class="release-item" data-board="esp32s3-generic" data-chip="ESP32-S3" onclick="selectBoard(this)">
+          <div class="ri-radio"></div>
+          <div class="ri-info">
+            <div class="ri-tag">ESP32-S3 Generic</div>
+            <div class="ri-meta">ESP32-S3 · 디스플레이 없음 · 시리얼 전용</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── STEP 2: 릴리즈 선택 ─── -->
+  <div class="card">
+    <div class="card-header">
+      <div class="step-badge" id="step1-badge">2</div>
       <h2>릴리즈 선택</h2>
     </div>
     <div class="card-body">
@@ -468,17 +515,17 @@
     </div>
   </div>
 
-  <!-- ─── STEP 2: 연결 및 플래시 ─── -->
+  <!-- ─── STEP 3: 연결 및 플래시 ─── -->
   <div class="card" id="flash-card">
     <div class="card-header">
-      <div class="step-badge locked" id="step2-badge">2</div>
+      <div class="step-badge locked" id="step2-badge">3</div>
       <h2>장치 연결 및 플래시</h2>
     </div>
     <div class="card-body">
       <div class="device-guide">
         <div class="guide-step">
           <div class="guide-num">①</div>
-          <span>T-Embed CC1101을 USB 케이블로 PC에 연결합니다.</span>
+          <span>선택한 장치를 USB 케이블로 PC에 연결합니다.</span>
         </div>
         <div class="guide-step">
           <div class="guide-num">②</div>
@@ -535,17 +582,35 @@
 <script type="module">
   // ── Constants ────────────────────────────────────────────────
   const REPO       = 'HITEYY/ZX-OS';
-  const ENV        = 't-embed-cc1101';
-  const CHIP       = 'ESP32-S3';
-  const APP_OFFSET = 0x10000;          // standard Arduino ESP32-S3 app partition
-  const BIN_PREFIX = `openclaw-${ENV}`;
+  const APP_OFFSET = 0x10000;          // standard Arduino ESP32 app partition
 
   const API_RELEASES = `https://api.github.com/repos/${REPO}/releases`;
   const GH_RELEASE   = (tag) => `https://github.com/${REPO}/releases/tag/${tag}`;
 
+  // ── Board state ────────────────────────────────────────────────
+  let currentBoard = 't-embed-cc1101';
+  let currentChip  = 'ESP32-S3';
+  let BIN_PREFIX   = `openclaw-${currentBoard}`;
+
   // ── State ─────────────────────────────────────────────────────
   let selected        = null;  // { release, asset, sha256Asset }
   let manifestBlobUrl = null;
+  let cachedReleases  = null;
+
+  // ── Board selector ────────────────────────────────────────────
+  window.selectBoard = function(el) {
+    document.querySelectorAll('#board-selector .release-item').forEach(e => e.classList.remove('selected'));
+    el.classList.add('selected');
+    currentBoard = el.dataset.board;
+    currentChip  = el.dataset.chip;
+    BIN_PREFIX   = `openclaw-${currentBoard}`;
+    document.getElementById('step0-badge').classList.add('done');
+    document.getElementById('step0-badge').textContent = '✓';
+    // Re-render releases for the new board
+    if (cachedReleases) {
+      renderReleases(cachedReleases);
+    }
+  };
 
   // ── DOM refs ──────────────────────────────────────────────────
   const releaseList   = document.getElementById('release-list');
@@ -611,7 +676,7 @@
       version: release.tag_name,
       builds:  [
         {
-          chipFamily: CHIP,
+          chipFamily: currentChip,
           parts: [
             { path: binaryUrl, offset: APP_OFFSET }
           ]
@@ -797,6 +862,7 @@
         throw new Error(`GitHub API 오류: ${resp.status}`);
       }
       const releases = await resp.json();
+      cachedReleases = releases;
       renderReleases(releases);
     } catch (err) {
       releaseList.innerHTML = `<div class="error-box">릴리즈 목록 로드 실패: ${escapeHtml(err.message)}</div>`;

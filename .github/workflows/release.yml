@@ -17,6 +17,11 @@ on:
         required: false
         default: false
         type: boolean
+      boards:
+        description: "Boards to build (comma-separated, or 'all')"
+        required: false
+        default: "all"
+        type: string
 
 permissions:
   contents: write
@@ -26,13 +31,32 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  resolve-matrix:
     runs-on: ubuntu-latest
+    outputs:
+      envs: ${{ steps.resolve.outputs.envs }}
+    steps:
+      - id: resolve
+        run: |
+          ALL='["t-embed-cc1101","t-deck","cardputer","cyd-2432s028","esp32s3-generic"]'
+          INPUT="${{ github.event.inputs.boards }}"
+          if [ -z "$INPUT" ] || [ "$INPUT" = "all" ]; then
+            echo "envs=$ALL" >> "$GITHUB_OUTPUT"
+          else
+            # Convert comma-separated list to JSON array
+            JSON=$(echo "$INPUT" | tr ',' '\n' | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//' | jq -R . | jq -sc .)
+            echo "envs=$JSON" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: resolve-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env: ${{ fromJson(needs.resolve-matrix.outputs.envs) }}
     env:
-      PIO_ENV: t-embed-cc1101
-      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
-      RELEASE_PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.prerelease || 'false' }}
-      RELEASE_DRAFT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.draft || 'false' }}
+      RELEASE_TAG: ${{ github.event.inputs.tag }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -62,16 +86,44 @@ jobs:
         run: pip install --upgrade platformio
 
       - name: Build firmware
-        run: pio run -e "$PIO_ENV"
+        run: pio run -e "${{ matrix.env }}"
 
       - name: Package release assets
         env:
-          PIO_ENV: ${{ env.PIO_ENV }}
+          PIO_ENV: ${{ matrix.env }}
           VERSION_TAG: ${{ env.RELEASE_TAG }}
           REPO_SLUG: ${{ github.repository }}
           INCLUDE_LATEST_ALIAS: "true"
           INCLUDE_APP_BUNDLE: "true"
         run: bash scripts/package_release_assets.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.env }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: [resolve-matrix, build]
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag }}
+      RELEASE_PRERELEASE: ${{ github.event.inputs.prerelease || 'false' }}
+      RELEASE_DRAFT: ${{ github.event.inputs.draft || 'false' }}
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts
+
+      - name: Merge artifacts into dist
+        run: |
+          mkdir -p dist
+          for d in all-artifacts/release-*/; do
+            cp "$d"* dist/ 2>/dev/null || true
+          done
+          ls -la dist/
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
@@ -84,4 +136,4 @@ jobs:
           generate_release_notes: true
           files: |
             dist/*
-          fail_on_unmatched_files: true
+          fail_on_unmatched_files: false

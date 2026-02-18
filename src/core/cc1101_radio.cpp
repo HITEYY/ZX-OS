@@ -9,18 +9,23 @@
 #include "board_pins.h"
 #include "shared_spi_bus.h"
 #include "user_config.h"
+#include "../hal/board_config.h"
 
 namespace {
 
-// Pin mapping from BruceFirmware T-Embed CC1101 profile (T_EMBED_1101).
-constexpr uint8_t PIN_POWER_ON = boardpins::kPowerEnable;
-constexpr uint8_t CC1101_GDO0_PIN = 3;
-constexpr uint8_t CC1101_SW1_PIN = 47;
-constexpr uint8_t CC1101_SW0_PIN = 48;
-constexpr uint8_t CC1101_SS_PIN = boardpins::kCc1101Cs;
-constexpr uint8_t CC1101_MISO_PIN = 10;
-constexpr uint8_t CC1101_MOSI_PIN = 9;
-constexpr uint8_t CC1101_SCK_PIN = 11;
+// Pin mapping from HAL board config.
+#if HAL_HAS_POWER_ENABLE
+constexpr uint8_t PIN_POWER_ON = HAL_PIN_POWER_ENABLE;
+#endif
+constexpr uint8_t CC1101_GDO0_PIN = HAL_PIN_CC1101_GDO0;
+#if HAL_HAS_ANTENNA_SWITCH
+constexpr uint8_t CC1101_SW1_PIN = HAL_PIN_CC1101_SW1;
+constexpr uint8_t CC1101_SW0_PIN = HAL_PIN_CC1101_SW0;
+#endif
+constexpr uint8_t CC1101_SS_PIN = HAL_PIN_CC1101_CS;
+constexpr uint8_t CC1101_MISO_PIN = HAL_SPI_MISO;
+constexpr uint8_t CC1101_MOSI_PIN = HAL_SPI_MOSI;
+constexpr uint8_t CC1101_SCK_PIN = HAL_SPI_SCK;
 
 constexpr uint8_t TX_POWER_DBM = 12;
 constexpr float RF_MIN_MHZ = 280.0f;
@@ -48,7 +53,8 @@ float clampFrequency(float mhz) {
 }
 
 void selectAntennaForFrequency(float mhz) {
-  // BruceFirmware antenna switch logic for T-Embed CC1101.
+#if HAL_HAS_ANTENNA_SWITCH
+  // Antenna switch logic for boards with dual-band antenna switching.
   if (mhz <= 350.0f) {
     digitalWrite(CC1101_SW1_PIN, HIGH);
     digitalWrite(CC1101_SW0_PIN, LOW);
@@ -59,6 +65,9 @@ void selectAntennaForFrequency(float mhz) {
     digitalWrite(CC1101_SW1_PIN, LOW);
     digitalWrite(CC1101_SW0_PIN, HIGH);
   }
+#else
+  (void)mhz;
+#endif
 }
 
 bool validatePacketConfig(const Cc1101PacketConfig &config, String &errorOut) {
@@ -134,17 +143,25 @@ bool initCc1101Radio() {
   gPacketConfig = Cc1101PacketConfig{};
   gCurrentFrequencyMhz = clampFrequency(gCurrentFrequencyMhz);
 
+#if HAL_HAS_POWER_ENABLE
   pinMode(PIN_POWER_ON, OUTPUT);
   digitalWrite(PIN_POWER_ON, HIGH);
+#endif
 
   // Shared SPI bus lines must keep other devices deselected.
+#if HAL_HAS_DISPLAY && defined(HAL_PIN_TFT_CS)
   pinMode(boardpins::kTftCs, OUTPUT);
   digitalWrite(boardpins::kTftCs, HIGH);
+#endif
+#if HAL_HAS_SD_CARD && defined(HAL_PIN_SD_CS)
   pinMode(boardpins::kSdCs, OUTPUT);
   digitalWrite(boardpins::kSdCs, HIGH);
+#endif
 
+#if HAL_HAS_ANTENNA_SWITCH
   pinMode(CC1101_SW1_PIN, OUTPUT);
   pinMode(CC1101_SW0_PIN, OUTPUT);
+#endif
   pinMode(CC1101_SS_PIN, OUTPUT);
   digitalWrite(CC1101_SS_PIN, HIGH);
 
@@ -368,7 +385,7 @@ bool transmitCc1101(uint32_t code,
 }
 
 void appendCc1101Info(JsonObject obj) {
-  obj["board"] = "LilyGo T-Embed CC1101";
+  obj["board"] = HAL_BOARD_NAME;
   obj["cc1101Ready"] = gCc1101Ready;
   obj["cc1101Present"] = gCc1101Ready ? ELECHOUSE_cc1101.getCC1101() : false;
   obj["frequencyMhz"] = gCurrentFrequencyMhz;

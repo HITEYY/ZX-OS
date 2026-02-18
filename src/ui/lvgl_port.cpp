@@ -4,6 +4,7 @@
 
 #include "../core/board_pins.h"
 #include "../core/shared_spi_bus.h"
+#include "../hal/board_config.h"
 
 namespace {
 
@@ -36,15 +37,17 @@ bool LvglPort::begin() {
   sharedspi::prepareChipSelects();
 
   // Backlight can remain off after deep sleep; force it on when LVGL starts.
+#if HAL_HAS_DISPLAY
   pinMode(boardpins::kTftBacklight, OUTPUT);
   analogWrite(boardpins::kTftBacklight, kBacklightFullDuty);
 
   pinMode(boardpins::kTftCs, OUTPUT);
   digitalWrite(boardpins::kTftCs, HIGH);
+#endif
 
   tft_.init();
   sharedspi::adoptInitializedBus(&TFT_eSPI::getSPIinstance());
-  tft_.setRotation(3);
+  tft_.setRotation(HAL_DISPLAY_ROTATION);
   tft_.fillScreen(TFT_BLACK);
   tft_.setSwapBytes(true);
   tft_.setTextColor(TFT_WHITE, TFT_RED);

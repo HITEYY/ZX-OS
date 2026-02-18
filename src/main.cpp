@@ -7,8 +7,12 @@
 #include <esp_system.h>
 #include <esp_sleep.h>
 
+#include "hal/board_config.h"
+
+#if HAL_HAS_PMU
 #define XPOWERS_CHIP_BQ25896
 #include <XPowersLib.h>
+#endif
 
 #include "apps/app_context.h"
 #include "core/cc1101_radio.h"
@@ -36,7 +40,9 @@ GatewayClient gGateway;
 BleManager gBle;
 NodeCommandHandler gNodeHandler;
 AppContext gAppContext;
+#if HAL_HAS_PMU
 XPowersPPM gPmu;
+#endif
 bool gSleepDetectionArmed = false;
 
 constexpr unsigned long kDeepSleepHoldMs = 3000UL;
@@ -128,6 +134,9 @@ void tickRamWatchdog() {
   ESP.restart();
 }
 
+// Deep sleep functions require a physical BACK button.
+#if (HAL_HAS_ENCODER || HAL_HAS_BUTTONS) && defined(HAL_PIN_BTN_BACK) && HAL_PIN_BTN_BACK >= 0
+
 void enableTopButtonWakeup() {
   const gpio_num_t wakePin = static_cast<gpio_num_t>(boardpins::kEncoderBack);
   rtc_gpio_init(wakePin);
@@ -163,9 +172,11 @@ void waitTopButtonReleased() {
   gBle.disconnectNow();
   gWifi.disconnect();
 
+#if HAL_HAS_DISPLAY
   pinMode(boardpins::kTftBacklight, OUTPUT);
   analogWrite(boardpins::kTftBacklight, 0);
   digitalWrite(boardpins::kTftBacklight, LOW);
+#endif
 
   // ext0 wake level is LOW, so arm wake only after the button is released.
   waitTopButtonReleased();
@@ -207,13 +218,20 @@ void tickDeepSleepButton() {
   }
 }
 
+#else
+// No physical back button: deep sleep via button not available.
+void tickDeepSleepButton() {}
+#endif  // deep sleep button support
+
 void runBackgroundTick() {
   tickDeepSleepButton();
   tickRamWatchdog();
   gWifi.tick();
   gGateway.tick();
   gBle.tick();
+#if HAL_HAS_DISPLAY
   gUiRuntime.tick();
+#endif
 }
 
 void configureGatewayCallbacks() {
@@ -234,17 +252,22 @@ void configureGatewayCallbacks() {
 }
 
 void initBoardPower() {
-  // T-Embed CC1101 needs this rail enabled for TFT/backlight/radio domain.
+#if HAL_HAS_POWER_ENABLE
+  // Enable power rail for TFT/backlight/radio domain.
   pinMode(boardpins::kPowerEnable, OUTPUT);
   digitalWrite(boardpins::kPowerEnable, HIGH);
   delay(30);
+#endif
 
+#if HAL_HAS_DISPLAY
   // Ensure TFT backlight is enabled after cold boot/wakeup.
   pinMode(boardpins::kTftBacklight, OUTPUT);
   analogWrite(boardpins::kTftBacklight, kBacklightFullDuty);
+#endif
 
-  Wire.begin(8, 18);
-  if (gPmu.init(Wire, 8, 18, BQ25896_SLAVE_ADDRESS)) {
+#if HAL_HAS_PMU && defined(HAL_I2C_SDA) && HAL_I2C_SDA >= 0
+  Wire.begin(HAL_I2C_SDA, HAL_I2C_SCL);
+  if (gPmu.init(Wire, HAL_I2C_SDA, HAL_I2C_SCL, BQ25896_SLAVE_ADDRESS)) {
     gPmu.resetDefault();
     gPmu.setChargeTargetVoltage(4208);
     gPmu.enableMeasure(PowersBQ25896::CONTINUOUS);
@@ -252,6 +275,9 @@ void initBoardPower() {
   } else {
     Serial.println("[boot] pmu init failed");
   }
+#elif defined(HAL_I2C_SDA) && HAL_I2C_SDA >= 0
+  Wire.begin(HAL_I2C_SDA, HAL_I2C_SCL);
+#endif
 }
 
 }  // namespace
@@ -262,7 +288,7 @@ void setup() {
 
   const esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
   const esp_reset_reason_t resetReason = esp_reset_reason();
-  Serial.println("[boot] start");
+  Serial.printf("[boot] start | board: %s\n", HAL_BOARD_NAME);
   if (wakeCause == ESP_SLEEP_WAKEUP_EXT0) {
     Serial.println("[boot] wake source: top button");
   }
@@ -281,21 +307,33 @@ void setup() {
   }
 
   // Keep shared SPI devices deselected before any peripheral init.
+#if HAL_HAS_DISPLAY && defined(HAL_PIN_TFT_CS)
   pinMode(boardpins::kTftCs, OUTPUT);
   digitalWrite(boardpins::kTftCs, HIGH);
+#endif
+#if HAL_HAS_SD_CARD && defined(HAL_PIN_SD_CS)
   pinMode(boardpins::kSdCs, OUTPUT);
   digitalWrite(boardpins::kSdCs, HIGH);
+#endif
+#if HAL_HAS_CC1101 && defined(HAL_PIN_CC1101_CS)
   pinMode(boardpins::kCc1101Cs, OUTPUT);
   digitalWrite(boardpins::kCc1101Cs, HIGH);
+#endif
 
   initBoardPower();
 
+#if HAL_HAS_DISPLAY
   Serial.println("[boot] ui.begin()");
   gUiRuntime.begin();
+#endif
+
+#if (HAL_HAS_ENCODER || HAL_HAS_BUTTONS) && defined(HAL_PIN_BTN_BACK) && HAL_PIN_BTN_BACK >= 0
   gSleepDetectionArmed = digitalRead(boardpins::kEncoderBack) == HIGH;
+#endif
 
   // Boot splash: show ZX-OS branding on every startup.
   // Waking from deep sleep skips the full splash to reduce latency.
+#if HAL_HAS_DISPLAY
   if (wakeCause != ESP_SLEEP_WAKEUP_EXT0) {
     gUiRuntime.showBootSplash("", 1400, []() {});
   }
@@ -305,13 +343,20 @@ void setup() {
     Serial.printf("[boot] previous reboot reason: %s\n", rebootReasonMsg.c_str());
     gUiRuntime.showToast("재부팅 원인", rebootReasonMsg, 3000, []() {});
   }
+#endif
 
+#if HAL_HAS_CC1101
   Serial.println("[boot] cc1101.init()");
   const bool ccReady = initCc1101Radio();
+#if HAL_HAS_DISPLAY
   if (!ccReady) {
     gUiRuntime.showToast("CC1101", "CC1101 not detected", 1500, []() {});
   }
+#endif
   Serial.println(ccReady ? "[boot] cc1101 ready" : "[boot] cc1101 missing");
+#else
+  Serial.println("[boot] cc1101 not present on this board");
+#endif
 
   ConfigLoadSource configLoadSource = ConfigLoadSource::Defaults;
   String loadErr;
@@ -321,10 +366,12 @@ void setup() {
   Serial.printf("[boot] cfg.uiLanguage=%s koreanFont=%d\n",
                 gAppContext.config.uiLanguage.c_str(),
                 gAppContext.config.koreanFontInstalled ? 1 : 0);
+#if HAL_HAS_DISPLAY
   gUiRuntime.setKoreanFontInstalled(gAppContext.config.koreanFontInstalled);
   gUiRuntime.setLanguage(uiLanguageFromConfigCode(gAppContext.config.uiLanguage));
   gUiRuntime.setTimezone(gAppContext.config.timezoneTz);
   gUiRuntime.setDisplayBrightnessPercent(gAppContext.config.displayBrightnessPercent);
+#endif
 
   gWifi.begin();
   gWifi.configure(gAppContext.config);
@@ -352,6 +399,7 @@ void setup() {
                          nullptr);
   }
 
+#if HAL_HAS_DISPLAY
   if (!loadErr.isEmpty()) {
     gUiRuntime.showToast("Config", loadErr, 1800, runBackgroundTick);
   } else if (configLoadSource == ConfigLoadSource::SdCard) {
@@ -361,8 +409,15 @@ void setup() {
   } else {
     gUiRuntime.showToast("Config", "Using default seeds", 900, runBackgroundTick);
   }
+#endif
 }
 
 void loop() {
+#if HAL_HAS_DISPLAY
   gUiNav.runLauncher(gAppContext, runBackgroundTick);
+#else
+  // Headless mode: just run background services.
+  runBackgroundTick();
+  delay(10);
+#endif
 }
