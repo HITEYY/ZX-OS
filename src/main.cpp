@@ -342,12 +342,6 @@ void setup() {
   gAppContext.uiNav = &gUiNav;
   gAppContext.configDirty = false;
 
-  if (gAppContext.config.autoConnect &&
-      !gAppContext.config.gatewayUrl.isEmpty() &&
-      hasGatewayCredentials(gAppContext.config)) {
-    gGateway.connectNow();
-  }
-
   if (gAppContext.config.bleAutoConnect &&
       !gAppContext.config.bleDeviceAddress.isEmpty()) {
     gBle.connectToDevice(gAppContext.config.bleDeviceAddress,

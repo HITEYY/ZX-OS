@@ -2375,6 +2375,10 @@ std::vector<String> buildStatusLines(AppContext &ctx) {
 }
 
 void ensureGatewayAutoConnectOnEnter(AppContext &ctx) {
+  if (!ctx.config.autoConnect) {
+    return;
+  }
+
   String validateErr;
   if (!validateConfig(ctx.config, &validateErr)) {
     return;
