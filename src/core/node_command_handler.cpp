@@ -147,9 +147,10 @@ bool readUInt32FromJson(JsonVariantConst v, uint32_t &out) {
     return true;
   }
   if (v.is<const char *>()) {
+    const String text = String(v.as<const char *>());
     char *endPtr = nullptr;
-    const unsigned long value = strtoul(String(v.as<const char *>()).c_str(), &endPtr, 0);
-    if (!endPtr || *endPtr != '\0') {
+    const unsigned long value = strtoul(text.c_str(), &endPtr, 0);
+    if (endPtr == text.c_str() || *endPtr != '\0') {
       return false;
     }
     out = static_cast<uint32_t>(value);
