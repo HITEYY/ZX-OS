@@ -355,6 +355,7 @@ class UiRuntime::Impl {
 
   String statusLine;
   UiLanguage language = UiLanguage::English;
+  bool koreanFontInstalled = false;
   String timezoneTz = USER_TIMEZONE_TZ;
   String timezonePosixTz = USER_TIMEZONE_TZ;
 
@@ -428,8 +429,10 @@ class UiRuntime::Impl {
   }
 
   const lv_font_t *font() const {
-    // Single font contains both ASCII and Hangul ranges.
-    return &lv_font_korean_ui_14;
+    if (koreanFontInstalled) {
+      return &lv_font_korean_ui_14;
+    }
+    return &lv_font_montserrat_14;
   }
 
   void service(const std::function<void()> *backgroundTick = nullptr) {
@@ -2246,6 +2249,17 @@ void UiRuntime::setLanguage(UiLanguage language) {
 
 UiLanguage UiRuntime::language() const {
   return impl_->language;
+}
+
+void UiRuntime::setKoreanFontInstalled(bool installed) {
+  impl_->koreanFontInstalled = installed;
+  if (impl_->port.ready()) {
+    impl_->applyTheme();
+  }
+}
+
+bool UiRuntime::isKoreanFontInstalled() const {
+  return impl_->koreanFontInstalled;
 }
 
 void UiRuntime::setTimezone(const String &tz) {

@@ -232,6 +232,123 @@ String keyboardPreview(const String &input) {
   return out;
 }
 
+String fontPackStatusLabel(bool installed, UiLanguage lang) {
+  const char *status = installed
+                           ? uiText(lang, UiTextKey::Installed)
+                           : uiText(lang, UiTextKey::NotInstalled);
+  return String(uiText(lang, UiTextKey::KoreanFontPack)) + ": " + status;
+}
+
+void runFontPacksMenu(AppContext &ctx,
+                      const std::function<void()> &backgroundTick) {
+  const UiLanguage lang = ctx.uiRuntime->language();
+  int selected = 0;
+
+  while (true) {
+    std::vector<String> menu;
+    const bool installed = ctx.config.koreanFontInstalled;
+
+    String actionLabel = installed
+                             ? String(uiText(lang, UiTextKey::Uninstall))
+                             : String(uiText(lang, UiTextKey::Install));
+    menu.push_back(String(uiText(lang, UiTextKey::KoreanFontPack)) +
+                   ": " + actionLabel);
+    menu.push_back("Back");
+
+    const String subtitle = fontPackStatusLabel(installed, lang);
+
+    const int choice = ctx.uiRuntime->menuLoop(
+        uiText(lang, UiTextKey::FontPacks),
+        menu,
+        selected,
+        backgroundTick,
+        "OK Select  BACK Exit",
+        subtitle);
+    if (choice < 0 || choice == 1) {
+      return;
+    }
+    selected = choice;
+
+    if (choice == 0) {
+      ctx.config.koreanFontInstalled = !installed;
+      ctx.uiRuntime->setKoreanFontInstalled(ctx.config.koreanFontInstalled);
+      markDirty(ctx);
+
+      if (!ctx.config.koreanFontInstalled &&
+          uiLanguageFromConfigCode(ctx.config.uiLanguage) == UiLanguage::Korean) {
+        ctx.config.uiLanguage = uiLanguageCode(UiLanguage::English);
+        ctx.uiRuntime->setLanguage(UiLanguage::English);
+      }
+
+      const char *msg = ctx.config.koreanFontInstalled
+                            ? uiText(ctx.uiRuntime->language(), UiTextKey::FontInstalled)
+                            : uiText(ctx.uiRuntime->language(), UiTextKey::FontUninstalled);
+      saveSettingsConfig(ctx, backgroundTick, "System");
+      ctx.uiRuntime->showToast("System", msg, 1400, backgroundTick);
+    }
+  }
+}
+
+void runLanguageAndFontMenu(AppContext &ctx,
+                            const std::function<void()> &backgroundTick) {
+  int selected = 0;
+
+  while (true) {
+    const UiLanguage currentLang = uiLanguageFromConfigCode(ctx.config.uiLanguage);
+
+    std::vector<String> menu;
+    menu.push_back(String(uiText(currentLang, UiTextKey::Language)) +
+                   ": " + uiLanguageLabel(currentLang));
+    menu.push_back(fontPackStatusLabel(ctx.config.koreanFontInstalled, currentLang));
+    menu.push_back("Back");
+
+    const int choice = ctx.uiRuntime->menuLoop(
+        uiText(currentLang, UiTextKey::LanguageAndFont),
+        menu,
+        selected,
+        backgroundTick,
+        "OK Select  BACK Exit",
+        "");
+    if (choice < 0 || choice == 2) {
+      return;
+    }
+    selected = choice;
+
+    if (choice == 0) {
+      std::vector<String> langItems;
+      langItems.push_back("English");
+      langItems.push_back("Korean");
+      langItems.push_back("Back");
+
+      const int langIndex = ctx.uiRuntime->menuLoop(
+          uiText(currentLang, UiTextKey::Language),
+          langItems,
+          currentLang == UiLanguage::Korean ? 1 : 0,
+          backgroundTick,
+          "OK Select  BACK Exit",
+          "");
+      if (langIndex >= 0 && langIndex <= 1) {
+        const UiLanguage nextLang = langIndex == 1 ? UiLanguage::Korean
+                                                   : UiLanguage::English;
+        if (nextLang == UiLanguage::Korean && !ctx.config.koreanFontInstalled) {
+          ctx.uiRuntime->showToast(
+              "System",
+              uiText(currentLang, UiTextKey::FontRequiredForKorean),
+              1800,
+              backgroundTick);
+        } else {
+          ctx.config.uiLanguage = uiLanguageCode(nextLang);
+          ctx.uiRuntime->setLanguage(nextLang);
+          markDirty(ctx);
+          saveSettingsConfig(ctx, backgroundTick, "System");
+        }
+      }
+    } else if (choice == 1) {
+      runFontPacksMenu(ctx, backgroundTick);
+    }
+  }
+}
+
 String displayBrightnessLabel(uint8_t percent) {
   String label = "Display Brightness: ";
   label += String(static_cast<unsigned long>(percent));
@@ -469,7 +586,7 @@ void runSystemMenu(AppContext &ctx,
       tzLabel = tzLabel.substring(0, 13) + "...";
     }
     menu.push_back(deviceNameLabel(ctx.config));
-    menu.push_back(String("UI Language: ") + uiLanguageLabel(currentLang));
+    menu.push_back(uiText(currentLang, UiTextKey::LanguageAndFont));
     menu.push_back(displayBrightnessLabel(ctx.config.displayBrightnessPercent));
     menu.push_back(String("Timezone: ") + tzLabel);
     menu.push_back("Sync Timezone (IP)");
@@ -521,24 +638,7 @@ void runSystemMenu(AppContext &ctx,
     }
 
     if (choice == 1) {
-      std::vector<String> langItems;
-      langItems.push_back("English");
-      langItems.push_back("Korean");
-      langItems.push_back("Back");
-
-      const int langIndex = ctx.uiRuntime->menuLoop("UI Language",
-                                                    langItems,
-                                                    currentLang == UiLanguage::Korean ? 1 : 0,
-                                                    backgroundTick,
-                                                    "OK Select  BACK Exit",
-                                                    "Language toggle");
-      if (langIndex >= 0 && langIndex <= 1) {
-        const UiLanguage nextLang = langIndex == 1 ? UiLanguage::Korean : UiLanguage::English;
-        ctx.config.uiLanguage = uiLanguageCode(nextLang);
-        ctx.uiRuntime->setLanguage(nextLang);
-        markDirty(ctx);
-        saveSettingsConfig(ctx, backgroundTick, "System");
-      }
+      runLanguageAndFontMenu(ctx, backgroundTick);
       continue;
     }
 
@@ -661,6 +761,7 @@ void runSystemMenu(AppContext &ctx,
     ctx.ble->disconnectNow();
     ctx.ble->configure(ctx.config);
 
+    ctx.uiRuntime->setKoreanFontInstalled(ctx.config.koreanFontInstalled);
     ctx.uiRuntime->setLanguage(uiLanguageFromConfigCode(ctx.config.uiLanguage));
     ctx.uiRuntime->setTimezone(ctx.config.timezoneTz);
     ctx.uiRuntime->setDisplayBrightnessPercent(ctx.config.displayBrightnessPercent);

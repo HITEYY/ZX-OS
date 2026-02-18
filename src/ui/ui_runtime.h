@@ -41,6 +41,9 @@ class UiRuntime {
   void setLanguage(UiLanguage language);
   UiLanguage language() const;
 
+  void setKoreanFontInstalled(bool installed);
+  bool isKoreanFontInstalled() const;
+
   void setTimezone(const String &tz);
   String timezone() const;
   bool syncTimezoneFromIp(String *resolvedTz = nullptr, String *error = nullptr);

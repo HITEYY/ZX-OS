@@ -40,6 +40,26 @@ const char *textEn(UiTextKey key) {
       return "English";
     case UiTextKey::Korean:
       return "Korean";
+    case UiTextKey::LanguageAndFont:
+      return "Language & Font";
+    case UiTextKey::FontPacks:
+      return "Font Packs";
+    case UiTextKey::KoreanFontPack:
+      return "Korean Font Pack";
+    case UiTextKey::Install:
+      return "Install";
+    case UiTextKey::Uninstall:
+      return "Uninstall";
+    case UiTextKey::Installed:
+      return "Installed";
+    case UiTextKey::NotInstalled:
+      return "Not Installed";
+    case UiTextKey::FontInstalled:
+      return "Korean font installed";
+    case UiTextKey::FontUninstalled:
+      return "Korean font uninstalled";
+    case UiTextKey::FontRequiredForKorean:
+      return "Install Korean font first";
     case UiTextKey::Saved:
       return "Saved";
     case UiTextKey::UnsavedChanges:
@@ -87,6 +107,26 @@ const char *textKo(UiTextKey key) {
       return "영어";
     case UiTextKey::Korean:
       return "한국어";
+    case UiTextKey::LanguageAndFont:
+      return "언어 및 글꼴";
+    case UiTextKey::FontPacks:
+      return "글꼴 팩";
+    case UiTextKey::KoreanFontPack:
+      return "한국어 글꼴 팩";
+    case UiTextKey::Install:
+      return "설치";
+    case UiTextKey::Uninstall:
+      return "제거";
+    case UiTextKey::Installed:
+      return "설치됨";
+    case UiTextKey::NotInstalled:
+      return "미설치";
+    case UiTextKey::FontInstalled:
+      return "한국어 글꼴 설치됨";
+    case UiTextKey::FontUninstalled:
+      return "한국어 글꼴 제거됨";
+    case UiTextKey::FontRequiredForKorean:
+      return "한국어 글꼴을 먼저 설치하세요";
     case UiTextKey::Saved:
       return "저장됨";
     case UiTextKey::UnsavedChanges:
