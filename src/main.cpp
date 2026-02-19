@@ -57,11 +57,11 @@ constexpr unsigned long kMemTraceLogMs = 5000UL;
 // indicate a system problem.  Returns nullptr for normal (non-problem) resets.
 const char *systemProblemResetReason(esp_reset_reason_t reason) {
   switch (reason) {
-    case ESP_RST_PANIC:    return "크래시 (패닉)";
-    case ESP_RST_INT_WDT:  return "인터럽트 와치독 타임아웃";
-    case ESP_RST_TASK_WDT: return "태스크 와치독 타임아웃";
-    case ESP_RST_WDT:      return "와치독 타임아웃";
-    case ESP_RST_BROWNOUT: return "전압 저하 (브라운아웃)";
+    case ESP_RST_PANIC:    return "Crash (Panic)";
+    case ESP_RST_INT_WDT:  return "Interrupt Watchdog Timeout";
+    case ESP_RST_TASK_WDT: return "Task Watchdog Timeout";
+    case ESP_RST_WDT:      return "Watchdog Timeout";
+    case ESP_RST_BROWNOUT: return "Brownout (Low Voltage)";
     default:               return nullptr;
   }
 }
@@ -130,7 +130,7 @@ void tickRamWatchdog() {
                 static_cast<unsigned int>(internalPct),
                 static_cast<unsigned int>(psramPct));
   Serial.flush();
-  saveRtcRebootReason("메모리 부족 (RAM 워치독)");
+  saveRtcRebootReason("Out of Memory (RAM Watchdog)");
   ESP.restart();
 }
 
@@ -341,7 +341,7 @@ void setup() {
   // If the previous boot ended due to a system problem, show the reason.
   if (rebootReasonMsg.length() > 0) {
     Serial.printf("[boot] previous reboot reason: %s\n", rebootReasonMsg.c_str());
-    gUiRuntime.showToast("재부팅 원인", rebootReasonMsg, 3000, []() {});
+    gUiRuntime.showToast("Reboot Reason", rebootReasonMsg, 3000, []() {});
   }
 #endif
 
