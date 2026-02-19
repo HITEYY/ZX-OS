@@ -167,10 +167,15 @@ bool ensureSdMounted(bool forceMount, String *error) {
     return true;
   }
 
+#if HAL_HAS_DISPLAY
   pinMode(boardpins::kTftCs, OUTPUT);
   digitalWrite(boardpins::kTftCs, HIGH);
+#endif
+#if HAL_HAS_CC1101
   pinMode(boardpins::kCc1101Cs, OUTPUT);
   digitalWrite(boardpins::kCc1101Cs, HIGH);
+#endif
+#if HAL_HAS_SD_CARD
   pinMode(boardpins::kSdCs, OUTPUT);
   digitalWrite(boardpins::kSdCs, HIGH);
 
@@ -186,6 +191,13 @@ bool ensureSdMounted(bool forceMount, String *error) {
     *error = "SD mount failed";
   }
   return mounted;
+#else
+  gSdMountedForMarket = false;
+  if (error) {
+    *error = "SD card not available";
+  }
+  return false;
+#endif
 }
 
 bool ensureMarketDirectory(String *error) {
