@@ -1,6 +1,8 @@
 #include "file_explorer_app.h"
 
+#if __has_include(<Audio.h>)
 #include <Audio.h>
+#endif
 #include <SD.h>
 #include <SPI.h>
 #include <lvgl.h>
